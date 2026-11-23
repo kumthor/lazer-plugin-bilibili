@@ -1,0 +1,29 @@
+# 注：本日志产自本地开发树。仓库版的 README.md（ZIP 内插件说明）做了两处改动——
+# 安装段指向 release 资产、UP 主 mid 换成占位值——因此 README.md 的字节数与 md5 与这里不同。
+# 其余 14 个文件的 md5 与仓库逐字节一致。权威校验以 Release 附件的 sha256 为准。
+
+# bilibili-0.4.6.zip
+version=0.4.6
+entries=15
+wrote <plugin>\bilibili-0.4.5.zip 66162 bytes
+OK   manifest.json 823B sha256=52b88dc2275cd467 md5=6def2fc626dee1564a8377cbbf320b6e
+OK   main.lua 5570B sha256=b3657e8aef222556 md5=431dbcd2bb4a23881ec3297cd983d2d9
+OK   README.md 19714B sha256=cbde1917aac9a154 md5=4f22a5971d66f07d58e32b8b7447b2ce
+OK   bili/auth.lua 6579B sha256=3ad0cebe7142529d md5=aba21386541a597230190976de3622f4
+OK   bili/catalog.lua 50505B sha256=37f6ab51e53dab4b md5=1db2972ad14cc7800fff004a90301436
+OK   bili/errors.lua 5022B sha256=87c710c5e5cca11f md5=331b1310dd281ba3ce61664684caeba2
+OK   bili/http.lua 9344B sha256=9064fc7a6bd7bcdf md5=28ca97c2bda0a90e238b059a016e9233
+OK   bili/ids.lua 2407B sha256=70c221650ff11dbf md5=3649f3f8bee65125b746e9f3eaf86ac0
+OK   bili/lyrics.lua 11358B sha256=f37d1150bf648cd5 md5=d957e9edf98b8b0440bd7e519752facb
+OK   bili/models.lua 11083B sha256=4c871c22539e79ee md5=cbe746f382436dff7e41d5f231704543
+OK   bili/pager.lua 13422B sha256=2346c2d8a59a8ce7 md5=3885f8a40e4276d3bb66a7fbe08d20ab
+OK   bili/store.lua 2473B sha256=b9fce312f14fa873 md5=363940dbffdba8cbc7db7b6b0999a962
+OK   bili/stream.lua 7175B sha256=235930c6b54a1175 md5=d227c656e12f2cc57bc8fcf0cb0eddc7
+OK   bili/util.lua 13251B sha256=8f6856deeb36b0e9 md5=d47644603daba46927d87110efa99d46
+OK   bili/wbi.lua 5291B sha256=088b51b1080709a6 md5=12976a04c85242efc0140efa59067102
+zipBytes=66162
+zipSha256=6e37722d30e54ed00a860997b43c71bd0d471628a5f32af378e56eb33af34711
+zipMd5=ace43440140f3661207375bbcc43a031
+byteIdentical=15/15
+residue=0 (opdiag / diag_ 写入 / WORST homeFeed)
+PACKAGE: PASS

@@ -45,7 +45,19 @@ end
 -- Rows -> song models, dropping entries that carry no playable id. A row
 -- without a bvid used to surface as `id=""`, which the host renders as a blank
 -- track that can never resolve.
-local function song_rows(rows)
+--
+-- `opts.leaveAlbumBlank` exists for ONE reason (S1 / T14): rows that carry no
+-- `videos` (search and favourites) must not bake a title into `albumName`,
+-- because the host's queue merge keeps that value forever
+-- (`music_platform_state.dart:635`) and `song()` can then never upgrade it to
+-- the part-aware name. Leaving it empty lets `hydrate()` fill it in when the
+-- user actually plays the row, which is the only place they need the count.
+--
+-- Rows that DO carry `videos` (popular / ranking / related / space_arc) keep
+-- writing the name immediately: they have a real N, and the list is where that
+-- number is worth showing.
+local function song_rows(rows, opts)
+  local leave_blank = type(opts) == "table" and opts.leaveAlbumBlank == true
   local out = {}
   local source = util.list(rows)
   for index = 1, #source do
@@ -54,7 +66,13 @@ local function song_rows(rows)
       local bvid = util.text(util.field(item, "bvid", "bv_id"))
       if bvid ~= "" then
         local cid = util.text(util.field(item, "cid"))
-        local song = models.song(item, { id = ids.of(bvid, cid) })
+        local song = models.song(item, {
+          id = ids.of(bvid, cid),
+          leaveAlbumBlank = leave_blank,
+        })
+        -- 历史遗留：`models.song` 已经用同一个 bvid 设过 albumId，这里是幂等
+        -- 重赋值。保留是因为删它只会扩大 diff，没有收益；**不要**把它读成
+        -- "albumId 在这里有第二套规则"。
         song.albumId = bvid
         out[#out + 1] = song
       end
@@ -124,7 +142,8 @@ function M.search(query, limit, offset)
       search_type = "video", keyword = keyword, page = pn, page_size = cap,
     })
     local data = data_of(body)
-    return song_rows(data.result), util.opt_number(data.numResults)
+    return song_rows(data.result, { leaveAlbumBlank = true }),
+           util.opt_number(data.numResults)
   end, want, skip, hops, nil, { cap = cap, budget = pager.SIGNED_BUDGET })
 
   local artists = pager.walk("search:user:" .. keyword, function(pn)
@@ -179,6 +198,9 @@ function M.song(id)
     title = part ~= nil and cid ~= "" and util.text(part.part) or "",
     durationMs = part ~= nil and cid ~= "" and
                  (util.number(part.duration, 0) * 1000) or nil,
+    -- 专辑名要的 N 是"这支视频有几 P"，不是"当前这一 P"。`#pages` 已在手，
+    -- 零请求；T13/D5 要求专辑页与列表页对同一支视频给出同一个专辑名。
+    parts = #pages > 0 and #pages or nil,
   })
   song.extra = {
     cid = part ~= nil and util.text(part.cid) or "",
@@ -257,7 +279,29 @@ function M.album_songs(id, limit, offset)
   -- `models.artist` each cost a full pass over the same inputs for every part,
   -- which is what put the 408 wall at 63 rows. Only the part-dependent title is
   -- still built per row.
-  local album_name = util.clean_title(util.text(data.title))
+  --
+  -- 专辑名带 `· N P` 后缀，N 取 `#pages` 而**不是** `#mappable`：mappable 会
+  -- 丢掉 cid 为空的 P（上面那段过滤），而 albumName 描述的是"这支视频有几 P"，
+  -- 不是"这里能播几 P"。用 mappable 会在有坏 P 时说小总数。T13/D5 + 负向控制 N3。
+  --
+  -- 标题与后缀共用 `models.ALBUM_LABEL_COLUMNS` 列预算，后缀宽度先扣：宿主按
+  -- **整串末尾**省略号截断（player_controls_bar.dart:131、desktop_now_playing.dart:532），
+  -- 53 字的 B站标题会把 ` · N P` 整段吃掉。与 models.song 共用同一套口径，
+  -- 两条路径出来的专辑名对同一支视频才逐字相同。
+  --
+  -- 没有 `pages` 时（`#pages == 0`）不裁：那时没有后缀要保护，裁了只会白白
+  -- 丢掉标题的信息。
+  --
+  -- **后缀只给多 P 加**（`#pages > 1`），与 `models.song` 同一条规则：单 P 视频
+  -- 没有 P 可选，` · 1 P` 只是让专辑列多一行字。
+  local album_base = util.clean_title(util.text(data.title))
+  if album_base == "" then album_base = "B站视频" end
+  local album_name = album_base
+  if #pages > 1 then
+    album_name = util.fit_label(album_base,
+                                " · " .. tostring(#pages) .. " P",
+                                models.ALBUM_LABEL_COLUMNS)
+  end
   local artists = { models.artist(owner.mid, owner.name) }
   local cover = util.image(util.field(data, "pic", "cover"))
   local multi = #mappable > 1
@@ -270,7 +314,9 @@ function M.album_songs(id, limit, offset)
     if part ~= "" and multi then
       title = util.clean_title("P" .. tostring(util.number(page.page, index + skip)) .. " " .. part)
     else
-      title = album_name
+      -- 单 P 的标题是纯标题，不能跟着 albumName 带上 `· 1 P`：T13/D3 要求
+      -- 标题与专辑名不同，否则列表里两列显示同一串字。
+      title = album_base
     end
     out[#out + 1] = {
       id = ids.format(bvid, cid),
@@ -423,7 +469,9 @@ local function folder_page(key, load, limit, offset, cap, budget)
   local rows, _, truncated = pager.walk(key, load, want, skip, hops, nil, {
     cap = cap, budget = budget,
   })
-  local out = song_rows(rows)
+  -- 收藏夹行同样没有 `videos`（fav_resources.json 的 `_note`：0/19），处理
+  -- 与 search 一致：专辑名留空，等播放时由 `song()` 补成「标题 · N P」。S1。
+  local out = song_rows(rows, { leaveAlbumBlank = true })
   -- Only a truncated walk that did NOT fill the window is a lie. A truncated
   -- walk that still returned `want` rows is a complete page: the client has
   -- what it asked for and its own next call will page on.

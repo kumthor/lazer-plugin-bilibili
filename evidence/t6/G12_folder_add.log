@@ -1,7 +1,7 @@
 [folder/add] name= T6probe724204 status= 200
-{"code":0,"message":"OK","ttl":1,"data":{"id":4733034450,"fid":47330344,"mid":7000002,"attr":6,"title":"T6probe724204","cover":"","upper":{"mid":0,"name":"","face":"","followed":false,"vip_type":0,"vip_statue":0},"cover_type":0,"cnt_info":{"collect":0,"play":0,"thumb_up":0,"share":0},"type":0,"intro":"","ctime":0,"mtime":0,"state":0,"fav_state":0,"like_state":0,"media_count":0,"is_top":false,"is_kid_playlist":false,"kid_playlist_desc":""}}
+{"code":0,"message":"OK","ttl":1,"data":{"id":4700000000,"fid":47000000,"mid":7000002,"attr":6,"title":"T6probe724204","cover":"","upper":{"mid":0,"name":"","face":"","followed":false,"vip_type":0,"vip_statue":0},"cover_type":0,"cnt_info":{"collect":0,"play":0,"thumb_up":0,"share":0},"type":0,"intro":"","ctime":0,"mtime":0,"state":0,"fav_state":0,"like_state":0,"media_count":0,"is_top":false,"is_kid_playlist":false,"kid_playlist_desc":""}}
   data keys: id,fid,mid,attr,title,cover,upper,cover_type,cnt_info,type,intro,ctime,mtime,state,fav_state,like_state,media_count,is_top,is_kid_playlist,kid_playlist_desc
-  data: {"id":4733034450,"fid":47330344,"mid":7000002,"attr":6,"title":"T6probe724204","cover":"","upper":{"mid":0,"name":"","face":"","followed":false,"vip_type":0,"vip_statue":0},"cover_type":0,"cnt_info":{"collect":0,"play":0,"thumb_up":0,"share":0},"type":0,"intro":"","ctime":0,"mtime":0,"state":0,"fav_state":0,"like_state":0,"media_count":0,"is_top":false,"is_kid_playlist":false,"kid_playlist_desc":
-[folder/del] media_ids= 4733034450 status= 200
+  data: {"id":4700000000,"fid":47000000,"mid":7000002,"attr":6,"title":"T6probe724204","cover":"","upper":{"mid":0,"name":"","face":"","followed":false,"vip_type":0,"vip_statue":0},"cover_type":0,"cnt_info":{"collect":0,"play":0,"thumb_up":0,"share":0},"type":0,"intro":"","ctime":0,"mtime":0,"state":0,"fav_state":0,"like_state":0,"media_count":0,"is_top":false,"is_kid_playlist":false,"kid_playlist_desc":
+[folder/del] media_ids= 4700000000 status= 200
 {"code":0,"message":"OK","ttl":1,"data":0}
   folders now = 6 默认收藏夹 | 一键三连 | 全金属狂潮 | 机动警察 | 星际牛仔 | 绝望先生

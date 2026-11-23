@@ -1,0 +1,6 @@
+# cookie=392 chars keyword=周杰伦
+{"tag":"plain_search_type_video","status":412,"code":-412,"msg":"request was banned","rows":0,"ms":139,"bytes":52,"withVideos":0,"videosSample":[],"withPages":0,"withEpisodeText":0,"firstKeys":0}
+{"tag":"wbi_search_type_video","status":200,"code":0,"msg":"OK","rows":20,"ms":669,"bytes":27368,"withVideos":0,"videosSample":[],"withPages":0,"withEpisodeText":3,"firstKeys":66}
+{"tag":"wbi_search_all_v2","status":200,"code":0,"ms":582,"bytes":31496,"groups":"tips:0,brand_ad:0,esports:0,activity:0,web_game:0,card:0,media_bangumi:0,media_ft:0,bili_user:1,user:0,star:0,video:20","videoRows":20,"videoWithVideos":0,"videoWithPages":0}
+{"tag":"wbi_search_type_media_bangumi","status":200,"code":0,"msg":"OK","rows":0,"ms":105,"bytes":360,"withVideos":0,"videosSample":[],"withPages":0,"withEpisodeText":0,"firstKeys":0}
+{"tag":"view_control","status":200,"code":0,"ms":74,"videos":100,"pages":100}

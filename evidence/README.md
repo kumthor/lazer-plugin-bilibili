@@ -11,13 +11,40 @@
 | 被访问的 UP 主 mid | `7000003` / `7000004` | 投稿接口的被访问对象 |
 | 本机账号 mid / 默认收藏夹 id | `7000002` / `7100001` | 插件作者的私有数据 |
 | UP 主昵称 | `uploader_07x` 等 | 等字节 ASCII 占位 |
+| 证据日志里引用的 UP 主 mid | `7000003` / `7000031` | 与 fixture 同一套占位 |
 | `<本机>/bili-lazer-plugin/` | `<plugin>/` | 本地路径 |
 | `<本机>/lazer-plugin-bilibili/` | `<repo>/` | 本地路径 |
 | Lazer 用户数据目录 | `<lazer-data>` | 本机路径 |
 
+两处注释提到但**未入库**的路径：`bili/lyrics.lua` 里的 `evidence/puremusic_backup/`（11 份宿主落盘的 `pureMusic:true` 空壳，含账号数据，只留在本地）、`evidence/t11/` 与 `evidence/t9/` 下的抓包原样字节与变体源码。`bili/lyrics.lua` 的注释保留该路径是因为它是那次测量的记录，不是可点链接。
+
 `test/fixtures/space_arc_real_p1..p5.json` 是同一套真实投稿响应，做了**等字节**脱敏（标题/简介/作者/mid 全部占位，`&` 与 `<` 保留），所以解码成本与 `clean_title` 成本与真机一致——这是 `T11#01/#02` 能当成本断言用的前提。
 
 ## 索引
+
+### T14 — 搜索页能不能便宜地拿到 P 数
+
+| 文件 | 内容 |
+| :--- | :--- |
+| `t14/probe_search_variants.log` | 四种搜索变体：plain 412（被 ban）、`wbi/search/type?video` 20 行但 `withVideos=0`、`search/all/v2` 同理、番剧桶 0 行 |
+| `t14/probe_batch_parts.log` | 66 个搜索字段全表（**无 `videos`、无 `pages`**）、逗号批量 `-400` |
+| `t14/probe_search_parts_cost.log` | 逐行补 P 数的代价：搜索 697 ms，加 30 次 `pagelist` = 2 681 ms（+2.85×） |
+| `t14/probe_pagelist.log` | `pagelist` 与 `view.pages` 逐行对照，30 行全部 `agree=true`；`pagelist` 串行不撞 250k 预算 |
+| `t14/probe_pagelist.mjs` | 探针源码（只读公开接口，不写文件） |
+
+### T13 — 多 P 视频的专辑名与列宽预算
+
+| 文件 | 内容 |
+| :--- | :--- |
+| `t13/T00_list_duration.log` | 榜单 97 行 / 热门 20 行的多 P 分布；`BV1q4FTeBEMj` 行 `duration=25142` = 100 个 P 之和，P1 只有 228 s |
+| `t13/FIT_LABEL_PROBE.log` | 直调生产代码的 `fit_label` 读数：7 组 budget/后缀/标题组合的 baseCols / suffixCols / **outCols** |
+| `t13/CLIP_PROBE.log` | 本运行时按**字符**索引（`string.len("【")==1`），宽字符判定必须按码位而不是 UTF-8 首字节 |
+| `t13/CLIP_FINAL.log` | 为什么第一版 `clip(24)` 不够、定稿算法、修前修后对照（33 列 → 31 列） |
+| `t13/N_negative_controls.log` | N1–N7 七条负向控制的红/绿读数 |
+| `t13/G_gates.log` | 静态门 12 项全 0 |
+| `t13/W_dual_host_contract_final.log` | 双宿主 154/154（基线链 140→150→152→153→154） |
+| `t13/PACKAGE.log` / `t13/INSTALL.log` | v0.4.6 打包 15/15 逐字节一致、安装 15/15 md5 一致 |
+| `t13/SMOKE.log` | 从已安装目录跑真实网络：`albumName budget: samples=100 over32=0 widest=31` |
 
 ### T12 — 首页音乐架限定音乐区
 

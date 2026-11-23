@@ -794,7 +794,7 @@ Future<Map<String, dynamic>> _handler(Map<String, dynamic> spec) async {
 final _manifest = PluginManifest.fromJson(const {
   'id': 'community.bilibili.music',
   'name': '哔哩哔哩',
-  'version': '0.4.4',
+  'version': '0.4.6',
   'provider': 'bilibili',
   'apiVersion': 1,
   // 与 src/manifest.json 逐项一致（T6#21 会断言；D12 曾是这里停在 v0.1.0）。
@@ -3385,5 +3385,418 @@ void main() {
     expect((rows[1] as Map)['title'], '纯文本 & 符号 无标记');
     // 作者名也走同一条路径，同样要解实体。
     expect(((rows[0] as Map)['artists'] as List).first['name'], 'UP&co');
+  });
+  // ---- T13: 多 P 可见性（albumName 带 `· N P`） ----
+  //
+  // 缺陷不是"选不到 P2"，是"看不出这里能选 P2"：`models.song` 给所有视频同一个
+  // 泛名 `B站视频`，而 `desktop_now_playing.dart:532` 的专辑名是唯一不依赖列表
+  // 的入口。T13/D3 把规则钉成 `视频标题 · N P`，N 分别取自 row.videos（列表行、
+  // view 顶层 videos）或 #pages（album_songs），search 与收藏夹行没有 videos
+  // （实测 0/20 与 0/19）所以不加后缀（D4）。
+
+  List<Map<String, dynamic>> _hotRowsForT13() => <Map<String, dynamic>>[
+        <String, dynamic>{
+          'bvid': 'BV1t13multi',
+          'title': '热门 3',
+          'pic': '//i0.hdslb.com/bfs/hot/m3.jpg',
+          'duration': '3:00',
+          'author': 'UP3',
+          'mid': 103,
+          'videos': 3,
+          'pid_v2': 1003,
+        },
+        <String, dynamic>{
+          'bvid': 'BV1t13single',
+          'title': '热门 2',
+          'pic': '//i0.hdslb.com/bfs/hot/s2.jpg',
+          'duration': '3:00',
+          'author': 'UP2',
+          'mid': 102,
+          'videos': 1,
+          'pid_v2': 1003,
+        },
+      ];
+
+  test('T13#01 a multi-part list row names its album "标题 · 3 P"', () async {
+    _paged('popular', (pn, ps) => _hotRowsForT13(), pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final songs = _list(feed['featuredSongs']).cast<Map>();
+    final multi = songs.firstWhere((s) => s['id'] == 'BV1t13multi');
+    expect(multi['albumName'], '热门 3 · 3 P',
+        reason: 'N 取该行的 videos，标题与后缀用同一个分隔符');
+    expect(multi['albumId'], 'BV1t13multi', reason: 'D2：albumId 仍是 bvid，可点');
+  });
+
+  test('T13#02 a single-part list row keeps the plain title, no suffix', () async {
+    _paged('popular', (pn, ps) => _hotRowsForT13(), pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final single = _list(feed['featuredSongs'])
+        .cast<Map>()
+        .firstWhere((s) => s['id'] == 'BV1t13single');
+    // **这条期望值在本轮改过**：原 D3 是"统一加后缀"，` · 1 P` 也要有。用户在
+    // 真机看过宽屏专辑列之后改成"只给多 P 加"——单 P 加 ` · 1 P` 只让专辑列
+    // 与标题列更像重复的一行字，而 1 P 的视频本来就没有 P 可选，后缀帮不上忙。
+    // 所以现在单 P 行与"没有 videos"的行显示相同：都是纯标题。
+    expect(single['albumName'], '热门 2',
+        reason: '单 P 不加后缀（用户确认的 D3 修订）');
+    expect(single['albumId'], 'BV1t13single', reason: '仍可点进专辑页');
+  });
+
+  test('T13#03 a search row leaves the album name blank for song() to fill', () async {
+    // T14/S1 改写了这条规则。原来要求 `albumName == title`，理由是"没有 N
+    // 就别写后缀"。但宿主的队列合并是
+    //   album: entry.album.isEmpty ? updated.album : entry.album
+    // （music_platform_state.dart:635）：一旦把纯标题写进队列条目，之后
+    // `song()` 返回的「标题 · N P」永远进不来，播放页就看不到有几 P。
+    //
+    // 所以 search / 收藏夹这两类**没有 videos 的行**改成留空，等播放时由
+    // `song()` 补上带后缀的称呼。空串不是"没有专辑"，是"还没问到"。
+    final result = await rt.invoke('search', {'query': '周杰伦', 'limit': 20, 'offset': 0}) as Map;
+    _expectNoError(result);
+    final songs = _list(result['songs']).cast<Map>();
+    expect(songs, isNotEmpty);
+    for (final song in songs) {
+      expect(song['albumName'], '',
+          reason: 'search 行留空，好让播放时的 song() 覆盖');
+      expect(song['albumId'], song['id'],
+          reason: 'albumId 仍是 bvid，专辑页入口不受影响');
+      expect('${song['albumId']}'.isNotEmpty, isTrue);
+    }
+  });
+
+  test('T13#03b playing a search row upgrades the album name to "标题 · N P"',
+      () async {
+    // 上一条的**目的**：留空之后，播放时 song() 必须真的给出带后缀的称呼。
+    // 没有这条，留空就只是把信息删掉了。
+    _multiPart = true;
+    try {
+      final song = await rt.invoke('song', {'id': 'BVmulti00001'}) as Map;
+      _expectNoError(song);
+      expect(song['albumName'], '三 P 视频 · 3 P');
+    } finally {
+      _multiPart = false;
+    }
+  });
+
+  test('T13#04 a favourites row leaves the album name blank too', () async {
+    // fav_resources.json 的 `_note`：0/19 既无 videos 也无顶层 cid，与 search
+    // 同族，处理必须一致（T14/S1）。
+    await login();
+    final songs = _list(await rt.invoke('playlistSongs',
+        {'id': '72000000', 'limit': 20, 'offset': 0}));
+    expect(songs, isNotEmpty);
+    for (final song in songs.cast<Map>()) {
+      expect(song['albumName'], '');
+    }
+  });
+
+  test('T13#04b rows that DO carry videos still name the album immediately',
+      () async {
+    // 留空只针对"不知道 N"的行。热门/榜单行有 videos，必须当场写名字——
+    // 否则这一轮的改动会顺手把 T13 的整个可见性目标退回去。
+    _paged('popular', (pn, ps) => _hotRowsForT13(), pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final rows = _list(feed['featuredSongs']).cast<Map>();
+    expect(rows, isNotEmpty);
+    for (final row in rows) {
+      expect('${row['albumName']}'.isNotEmpty, isTrue,
+          reason: '有 videos 的行不该留空');
+    }
+  });
+
+  test('T13#05 albumSongs names every part with the video\'s total part count', () async {
+    _multiPart = true;
+    try {
+      final rows = _list(await rt.invoke('albumSongs',
+          {'id': 'BVmulti00001', 'limit': 100, 'offset': 0})).cast<Map>();
+      expect(rows.length, 3);
+      for (final row in rows) {
+        expect(row['albumName'], '三 P 视频 · 3 P',
+            reason: '同一个专辑名，N 是这支视频的总 P 数');
+      }
+      // 标题仍是分 P 名：D3 要求标题与专辑名不同，否则列表两列同字。
+      expect(rows.map((r) => r['title']).toList(),
+          ['P1 第一部分', 'P2 第二部分', 'P3 第三部分']);
+    } finally {
+      _multiPart = false;
+    }
+  });
+
+  test('T13#05b a bad part does not shrink the album name\'s part count', () async {
+    // `albumName` 描述的是"这支视频有几 P"，不是"这里能播几 P"。第 2 个 P 的
+    // cid 为空时它会被过滤掉（无法播放），但总数仍是 3。
+    // 这是 N3 的靶子：把 N 改成 #mappable 就会说"2 P"，说小了。
+    _multiPart = true;
+    _emptyCidAt = 2;
+    try {
+      final rows = _list(await rt.invoke('albumSongs',
+          {'id': 'BVmulti00001', 'limit': 100, 'offset': 0})).cast<Map>();
+      expect(rows.length, 2, reason: 'cid 为空的 P 播不了，不进行空间');
+      for (final row in rows) {
+        expect(row['albumName'], '三 P 视频 · 3 P',
+            reason: '总数取 #pages=3，不随丢掉的坏 P 缩小');
+      }
+    } finally {
+      _emptyCidAt = 0;
+      _multiPart = false;
+    }
+  });
+
+  test('T13#06 song(bvid:cid) names the album after the whole video', () async {
+    _multiPart = true;
+    try {
+      final song = await rt.invoke('song', {'id': 'BVmulti00001:2002'}) as Map;
+      _expectNoError(song);
+      expect(song['title'], '第二部分', reason: '标题仍是这一 P 的');
+      expect(song['albumName'], '三 P 视频 · 3 P', reason: '专辑名是整支视频的');
+    } finally {
+      _multiPart = false;
+    }
+  });
+
+  test('T13#07 song(plain bvid) names the album from view.pages', () async {
+    _multiPart = true;
+    try {
+      final song = await rt.invoke('song', {'id': 'BVmulti00001'}) as Map;
+      _expectNoError(song);
+      expect(song['albumName'], '三 P 视频 · 3 P',
+          reason: 'view 的 #pages 就是 N，零额外请求');
+      final extra = song['extra'] as Map;
+      expect(extra['parts'], 3);
+    } finally {
+      _multiPart = false;
+    }
+  });
+
+  test('T13#08 no row falls back to the generic "B站视频" name', () async {
+    _paged('popular', (pn, ps) => _hotRowsForT13(), pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final search = await rt.invoke('search', {'query': '周杰伦', 'limit': 20, 'offset': 0}) as Map;
+    _expectNoError(search);
+    final seen = <Map>[
+      ..._list(feed['featuredSongs']).cast<Map>(),
+      ..._list(search['songs']).cast<Map>(),
+    ];
+    expect(seen, isNotEmpty);
+    for (final row in seen) {
+      expect(row['albumName'], isNot('B站视频'),
+          reason: '${row['title']} 落回了泛名，正在播放页的入口又会看不出是什么');
+    }
+    // 「非空」只对有 `videos` 的行成立（T14/S1）：search / 收藏夹行留空是**有意**
+    // 的，好让播放时 song() 补成带后缀的称呼。这里分组断言，避免把两条相反
+    // 的规则写成一个含糊的循环。
+    final named = _list(feed['featuredSongs']).cast<Map>();
+    expect(named, isNotEmpty);
+    for (final row in named) {
+      expect(row['albumName'], isNotEmpty,
+          reason: '有 videos 的行必须当场写出名字');
+    }
+  });
+
+  test('T13#11 a long title is clipped so the " · N P" suffix survives', () async {
+    // 宿主按末尾省略号截断（player_controls_bar.dart:131、
+    // desktop_now_playing.dart:532）。60 列的标题会把 ` · N P` 整段吃掉，
+    // 专辑行又变回"看不出有几 P"——真机 `BV1q4FTeBEMj`（标题 60 列）就是这样。
+    // 修法：`util.fit_label` 先量后缀，剩余列数才给标题。
+    const long = '【无损音质】周杰伦歌曲精选100首 歌词版纯享 地表最高音质 每一首都是顶级文案 中国流行音乐开拓者JAY';
+    _paged('popular', (pn, ps) => <Map<String, dynamic>>[
+          <String, dynamic>{
+            'bvid': 'BV1t13long',
+            'title': long,
+            'pic': '//i0.hdslb.com/bfs/hot/long.jpg',
+            'duration': '3:00',
+            'author': 'UP',
+            'mid': 101,
+            'videos': 100,
+            'pid_v2': 1003,
+          },
+        ], pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final row = _list(feed['featuredSongs']).cast<Map>().first;
+    final name = '${row['albumName']}';
+    expect(name, endsWith(' · 100 P'), reason: '后缀必须完整保留');
+    expect(name.endsWith('…'), isFalse, reason: '省略号在标题里，不在结尾');
+    expect(name, startsWith('【无损音质】'), reason: '标题前缀保留（裁尾不裁头）');
+    expect(name.contains('… · 100 P'), isTrue,
+        reason: '裁掉的标题以省略号收尾，后缀紧跟其后');
+    // 整串预算 32 列（`models.ALBUM_LABEL_COLUMNS`），后缀 ` · 100 P` 占 8 列，
+    // 省略号占 1 列，剩下的才给标题。全角标题 2 列/字 → 11 个字 + 省略号 = 23 列，
+    // 加后缀共 31 列，仍在 32 之内。断言按**字符**数（本运行时 string.len 就是
+    // 字符数，实测见 evidence/t13/CLIP_PROBE.log）。
+    final cut = name.substring(0, name.indexOf('…'));
+    expect(cut.length, lessThanOrEqualTo(11),
+        reason: '全角标题按 2 列/字算，预算扣掉后缀与省略号后最多 11 个字');
+    expect(cut.length, greaterThanOrEqualTo(6),
+        reason: '不能裁到只剩一两个字，否则标题没有信息量');
+    // 逐字钉住。**这条曾经钉的是 `【无损音质】周杰伦歌曲精… · 100 P`（12 字），
+    // 而那正是 `fit_label` 越界 1 列的产物**——探针实测 outCols=33 > budget=32
+    // （`FIT_LABEL_PROBE.log`）。断言把 bug 当成正确答案钉了下来，是这一轮
+    // 修 `fit_label` 时才发现的。现在的值是扣掉省略号那一列之后的。
+    expect(name, '【无损音质】周杰伦歌曲… · 100 P',
+        reason: '逐字钉住，避免"看起来对"的裁剪');
+    // 标题列不受影响：用户要读全。
+    expect(row['title'], long, reason: '只裁 albumName，title 保持原文');
+  });
+
+  test('T13#12 album_songs clips the same way as a list row', () async {
+    // 两条构造点必须用同一个列数，否则同一支视频从列表进和从专辑页进
+    // 会得到不同的专辑名（D5 的核心要求）。
+    _multiPart = true;
+    _multiPartParts = 2;
+    try {
+      final rows = _list(await rt.invoke('albumSongs',
+          {'id': 'BVmulti00001', 'limit': 100, 'offset': 0})).cast<Map>();
+      expect(rows, isNotEmpty);
+      // fixture 的标题"三 P 视频"只有 8 列，不触发裁剪，但形状必须一致。
+      for (final row in rows) {
+        expect(row['albumName'], '三 P 视频 · 2 P');
+      }
+    } finally {
+      _multiPart = false;
+      _multiPartParts = 3;
+    }
+  });
+
+  test('T13#13 the suffix width is charged against the title budget', () async {
+    // `util.fit_label` 先量后缀再决定标题能占几列。同样 53 字的标题，
+    // ` · 100 P`（8 列）与 ` · 2 P`（5 列）留给标题的宽度差 3 列，所以裁出来
+    // 的标题长度必须不同。固定裁标题再拼后缀的实现会让两者相等——这正是
+    // 上一版在真机上仍被宿主省略号吃掉后缀的原因。
+    const long = '【无损音质】周杰伦歌曲精选100首 歌词版纯享 地表最高音质 每一首都是顶级文案 中国流行音乐开拓者JAY';
+    int suffixOf(String name) => name.lastIndexOf(' · ');
+    // 同一页里放两行，避免第二次 homeFeed 命中 wide 缓存而拿到上一轮的结果
+    // （缓存是 6 h、按 bvid 无关的整架缓存，不是这次要测的东西）。
+    _paged('popular', (pn, ps) => <Map<String, dynamic>>[
+          <String, dynamic>{
+            'bvid': 'BV1t13bud100',
+            'title': long,
+            'pic': '//i0.hdslb.com/bfs/hot/b100.jpg',
+            'duration': '3:00',
+            'author': 'UP',
+            'mid': 101,
+            'videos': 100,
+            'pid_v2': 1003,
+          },
+          <String, dynamic>{
+            'bvid': 'BV1t13bud002',
+            'title': long,
+            'pic': '//i0.hdslb.com/bfs/hot/b002.jpg',
+            'duration': '3:00',
+            'author': 'UP',
+            'mid': 102,
+            'videos': 2,
+            'pid_v2': 1003,
+          },
+        ], pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final songs = _list(feed['featuredSongs']).cast<Map>();
+    final names = <int, String>{
+      for (final row in songs)
+        (row['albumId'] == 'BV1t13bud100' ? 100 : 2): '${row['albumName']}',
+    };
+    expect(names[100], endsWith(' · 100 P'));
+    expect(names[2], endsWith(' · 2 P'));
+    final title100 = names[100]!.substring(0, suffixOf(names[100]!));
+    final title2 = names[2]!.substring(0, suffixOf(names[2]!));
+    expect(title100.length, lessThan(title2.length),
+        reason: '100 P 的后缀更宽，留给标题的列数必须更少');
+    expect(title2.length - title100.length, greaterThanOrEqualTo(1),
+        reason: '3 列差距至少要体现为 1 个全角字');
+    // 两条都还能看见 P 数，也就是这个修复的目的。
+    expect(names[100]!.contains('P'), isTrue);
+    expect(names[2]!.contains('P'), isTrue);
+  });
+
+  test('T13#14 the fitted album name never exceeds its column budget', () async {
+    // T13#11/#13 钉的是"后缀活下来"和"后缀宽度参与预算"，都没有钉**上限**。
+    // 缺的正是这一条：`fit_label` 曾经把 room 整份交给 `clip`，而 `clip` 会先
+    // 填满 room 列再追加省略号，于是整串超出预算 1 列（探针实测 outCols=33 vs
+    // budget=32）。宿主按列宽省略，超出 1 列就是后缀被吃掉。
+    //
+    // 这里用 `util.columns` 的语义在 Dart 侧独立重算列宽（全角 2 / 半角 1），
+    // 不复用插件里的判断——那样才是真的独立校验，而不是把同一个 bug 抄两遍。
+    int cols(String text) {
+      var total = 0;
+      for (final rune in text.runes) {
+        final wide = (rune >= 0x1100 && rune <= 0x115F) ||
+            (rune >= 0x2E80 && rune <= 0xA4CF) ||
+            (rune >= 0xAC00 && rune <= 0xD7A3) ||
+            (rune >= 0xF900 && rune <= 0xFAFF) ||
+            (rune >= 0xFE30 && rune <= 0xFE6F) ||
+            (rune >= 0xFF00 && rune <= 0xFF60) ||
+            (rune >= 0xFFE0 && rune <= 0xFFE6) ||
+            (rune >= 0x1F300 && rune <= 0x1FAFF);
+        total += wide ? 2 : 1;
+      }
+      return total;
+    }
+
+    const long = '【无损音质】周杰伦歌曲精选100首 歌词版纯享 地表最高音质 每一首都是顶级文案 中国流行音乐开拓者JAY';
+    const mixed = 'GTA6 性能要求高吗？哪台主机表现好？解锁 30 帧后能跑多少帧？';
+    // 100 P 是最宽的后缀（8 列），1 P 最窄；两种标题宽度都要守住同一条上限。
+    // **全部塞进同一次 homeFeed**：专辑架有 6 h 缓存，多调几次拿到的是同一份
+    // 结果（第一次写这条断言就踩了，第二次调用读到的是上一轮的 ` · 100 P`）。
+    final cases = <Map<String, dynamic>>[];
+    var caseId = 0;
+    for (final parts in <int>[100, 2, 1]) {
+      for (final title in <String>[long, mixed]) {
+        caseId += 1;
+        cases.add(<String, dynamic>{
+          'bvid': 'BV1t13bd${caseId.toString().padLeft(4, '0')}',
+          'title': title,
+          'pic': '//i0.hdslb.com/bfs/hot/b$caseId.jpg',
+          'duration': '3:00',
+          'author': 'UP',
+          'mid': 100 + caseId,
+          'videos': parts,
+          'pid_v2': 1003,
+          // parts == 1 没有后缀（D3 修订），此时要求"整串 = 纯标题"，
+          // 也就是标题**完全不被裁**。这条与 100 P/2 P 一起守同一条上限。
+          '_want': parts > 1 ? ' · $parts P' : '',
+          '_plain': parts <= 1,
+        });
+      }
+    }
+    _paged('popular', (pn, ps) => cases, pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final rows = _list(feed['featuredSongs']).cast<Map>();
+    expect(rows.length, cases.length, reason: '六条都要出现在架子上');
+    for (final want in cases) {
+      final row = rows.firstWhere((r) => r['albumId'] == want['bvid'],
+          orElse: () => <String, dynamic>{});
+      expect(row, isNotEmpty, reason: '${want['bvid']} 必须出现在架子上');
+      final name = '${row['albumName']}';
+      if (want['_plain'] == true) {
+        // 单 P：不带后缀，也不裁——没有后缀要保护，裁了只会白丢标题。
+        expect(name, want['title'], reason: '单 P 的专辑名就是完整标题');
+        continue;
+      }
+      expect(cols(name), lessThanOrEqualTo(32),
+          reason: '${want['bvid']} 的专辑名 $cols(name) 列，'
+              '超过 models.ALBUM_LABEL_COLUMNS=32 就会被宿主吃掉后缀：$name');
+      expect(name, endsWith('${want['_want']}'), reason: '后缀必须完整：$name');
+    }
+  });
+
+  test('T13#10 search still spends zero view requests', () async {
+    // 后缀完全由行内字段推出，不得为了拿 N 去发 view——search 的解码上限
+    // （40 行/桶，50 行即 408）没有任何余量给逐行探测。
+    _resetCalls();
+    await rt.invoke('search', {'query': '周杰伦', 'limit': 20, 'offset': 0});
+    expect(_callsOf('view'), 0, reason: 'search 的 N 不可得，就地不加后缀');
   });
 }

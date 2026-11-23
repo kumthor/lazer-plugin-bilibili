@@ -145,6 +145,120 @@ function M.replace(source, needle, replacement)
   return table.concat(out)
 end
 
+-- Clip a title to at most `limit` DISPLAY COLUMNS, cutting on a UTF-8 boundary.
+--
+-- The host renders `albumName` with `maxLines: 1, overflow: ellipsis`
+-- (player_controls_bar.dart:131, desktop_now_playing.dart:532), so it clips at
+-- the END. A 60-column B站 upload title therefore ate the whole ` · N P`
+-- suffix and the album row stopped saying how many parts the video has — which
+-- is exactly the entry the suffix exists to advertise. Clipping here keeps the
+-- suffix (it is appended AFTER this call) and spends the ellipsis on the title
+-- instead.
+--
+-- Columns, not bytes: CJK titles are 3 bytes per glyph, and the limit is
+-- carried in the unit the UI actually measures in. Wide glyphs (CJK, fullwidth
+-- punctuation, most emoji) count 2 columns so a mixed title is clipped at
+-- roughly the same pixel width as a latin one. The embedded runtime has no
+-- `%`-classes and no `#`, so bytes are walked explicitly.
+local ELLIPSIS = "…"
+
+-- Wide-glyph test on a CODE POINT.
+--
+-- This runtime indexes strings by CHARACTER, not by byte: `string.len("【")` is
+-- 1 and `string.byte("【")` is 12304 (measured, evidence/t13/CLIP_PROBE.log).
+-- So the ranges below are the standard East Asian Wide ones in code-point
+-- space, not UTF-8 lead bytes — an earlier draft compared lead bytes and
+-- advanced the cursor by 4 for every CJK glyph, which skipped three characters
+-- per step and clipped a 24-column label at 46 characters.
+local function glyph_cols(source, index)
+  local cp = string.byte(source, index)
+  if cp == nil then return 1 end
+  if cp < 4352 then return 1 end                      -- below U+1100: narrow
+  if cp <= 4447 then return 2 end                     -- U+1100-115F hangul jamo
+  if cp < 11904 then return 1 end                     -- U+1160-2E7F: narrow
+  if cp <= 42191 then return 2 end                    -- U+2E80-A4CF CJK + kana + Yi
+  if cp < 44032 then return 1 end                     -- U+A4D0-ABFF: narrow
+  if cp <= 55203 then return 2 end                    -- U+AC00-D7A3 hangul syllables
+  if cp < 63744 then return 1 end                     -- U+D7A4-F8FF: narrow
+  if cp <= 64255 then return 2 end                    -- U+F900-FAFF CJK compat
+  if cp < 65072 then return 1 end                     -- U+FB00-FE2F: narrow
+  if cp <= 65135 then return 2 end                    -- U+FE30-FE6F CJK compat forms
+  if cp < 65280 then return 1 end                     -- U+FE70-FEFF: narrow
+  if cp <= 65376 then return 2 end                    -- U+FF00-FF60 fullwidth
+  if cp < 65504 then return 1 end                     -- U+FF61-FFDF: narrow
+  if cp <= 65510 then return 2 end                    -- U+FFE0-FFE6 fullwidth signs
+  if cp < 127744 then return 1 end                    -- below U+1F300: narrow
+  if cp <= 129791 then return 2 end                   -- U+1F300-1FAFF emoji
+  return 1
+end
+
+-- Display columns of a whole string.
+function M.columns(text)
+  local source = M.text(text)
+  local total = string.len(source)
+  local width = 0
+  local index = 1
+  while index <= total do
+    width = width + glyph_cols(source, index)
+    index = index + 1
+  end
+  return width
+end
+
+-- `text` clipped to `limit` display columns, with a trailing ellipsis when it
+-- was actually shortened. Returns `text` untouched when it already fits.
+--
+-- One `string.sub` per character: the runtime already slices by character, so
+-- there is no multi-byte boundary to preserve and no cursor to advance by hand.
+function M.clip(text, limit)
+  local source = M.text(text)
+  local max = M.number(limit, 0)
+  if max <= 0 then return source end
+  local total = string.len(source)
+  local width = 0
+  local index = 1
+  while index <= total do
+    local cols = glyph_cols(source, index)
+    if width + cols > max then break end
+    width = width + cols
+    index = index + 1
+  end
+  if index > total then return source end
+  local kept = M.trim(string.sub(source, 1, index - 1))
+  if kept == "" then return ELLIPSIS end
+  return kept .. ELLIPSIS
+end
+
+-- `base .. suffix` fitted into a SINGLE total column budget.
+--
+-- This is the one the album name uses. Clipping `base` to a fixed width and
+-- then appending ` · N P` does not work: the host renders the whole string with
+-- one `overflow: ellipsis`, so the budget has to cover the suffix too. The
+-- suffix is measured first and the remaining columns go to the title, which is
+-- what keeps ` · 100 P` on screen no matter how long the title is.
+--
+-- When the suffix alone already exceeds `budget`, the suffix wins and the title
+-- is dropped entirely: knowing "this video has 100 parts" is the entire point of
+-- the label, and a truncated ` · 10…` would be a wrong number.
+function M.fit_label(base, suffix, budget)
+  local tail = M.text(suffix)
+  local max = M.number(budget, 0)
+  local source = M.text(base)
+  if max <= 0 then return source .. tail end
+  local tail_width = M.columns(tail)
+  local room = max - tail_width
+  if room <= 0 then return M.trim(tail) end
+  -- The ellipsis itself costs one column: `clip` fills `limit` columns and THEN
+  -- appends "…", so handing it the whole `room` overruns the budget by exactly
+  -- one column. Measured: `fit_label(long, " · 100 P", 32)` returned 33 columns
+  -- before this subtraction (evidence/t13/FIT_LABEL_PROBE.log). One column past
+  -- the budget is the difference between the host keeping the suffix and
+  -- ellipsing it away, which is the entire defect this function exists for.
+  if room < 2 then return M.trim(tail) end
+  local clipped = M.clip(source, room - 1)
+  return clipped .. tail
+end
+
 -- Search results carry "4:19"; view carries seconds (213); long videos carry
 -- "1:02:03". Accumulate segment by segment (BiliMusic bilibili.rs:1917-1922):
 -- the old code split on the FIRST colon only, so `tonumber("02:03")` was nil,

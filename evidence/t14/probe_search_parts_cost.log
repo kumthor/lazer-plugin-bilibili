@@ -1,0 +1,5 @@
+# cookie=392 chars keyword=周杰伦
+{"tag":"search","status":200,"code":0,"rawRows":35,"playable":31,"droppedNoBvid":4,"ms":697}
+{"tag":"pagelist_serial","rows":30,"fails":0,"multi":17,"multiDetail":["BV1q4FTeBEMj/100P","BV1FPjy6TEiE/50P","BV1ThsD6HE6L/57P","BV19P4y1P75w/94P","BV1Ue411V7jS/66P","BV1kt7g61EGq/184P","BV1cXpY6xEkt/32P","BV1fx411N7bU/200P"],"totalMs":1984,"avgMs":66,"totalBytes":443777}
+{"tag":"view_serial","rows":30,"fails":0,"totalMs":2671,"avgMs":89,"totalBytes":2317624}
+{"tag":"verdict","searchAloneMs":697,"withPagelistMs":2681,"addedMs":1984,"addedRatio":2.85}

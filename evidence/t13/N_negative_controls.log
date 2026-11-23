@@ -1,0 +1,98 @@
+# T13 负向控制（三条，全部变红，全部换回）
+
+方法：直接改 `src/`，跑双宿主契约测试（`test/plugin_contract_test.dart`），记录红了哪几条，再 `cp` 回备份并复跑确认全绿。
+备份：`/tmp/models.lua.bak`、`/tmp/catalog.lua.bak`（改前副本）。
+
+---
+
+## N1：`albumName` 改回硬编码 `"B站视频"`
+
+两处同时改（`models.lua` 的 `album_name` 构造、`catalog.lua` 的 `album_songs`）。
+
+```
+00:06 +140 -1: T13#01 ... [E]
+00:06 +140 -2: T13#02 ... [E]
+00:06 +140 -3: T13#03 ... [E]
+00:06 +140 -4: T13#04 ... [E]
+00:06 +140 -5: T13#05 ... [E]
+00:06 +140 -6: T13#06 ... [E]
+00:06 +140 -7: T13#07 ... [E]
+00:07 +140 -8: T13#08 ... [E]
+00:07 +141 -8: Some tests failed.
+```
+
+**红 8 条**（T13#01–#08），与任务书期望的「#01/#02/#05/#06/#07/#08 全红」一致，另多红 #03/#04 —— 因为两处都改时 `search`／收藏夹行也拿到了泛名，这正是 T13#03/#04 要挡的东西。
+
+只改 `models.lua` 一处时红 7 条（#01–#04、#06–#08），#05 不变红：`album_songs` 自己构造 `albumName`，不经 `models.song`。这个差别本身也是一条证据：**两条路径各有独立构造点，改一处不会静默带过另一处**。
+
+## N2：`parts == nil` 分支猜一个数
+
+```lua
+if parts == nil then parts = 2 end  -- N2 negative control
+```
+
+```
+00:06 +142 -1: T13#03 a search row keeps the plain title, no P suffix [E]
+00:06 +142 -2: T13#04 a favourites row keeps the plain title, no P suffix [E]
+00:08 +147 -2: Some tests failed.
+```
+
+**红 2 条**，恰好是任务书期望的 #03/#04。说明"没有 `videos` 时不许猜"这条约束有断言守着。
+
+## N3：`album_songs` 的 N 从 `#pages` 改成 `#mappable`
+
+```lua
+if #mappable > 0 then
+  album_name = album_base .. " · " .. tostring(#mappable) .. " P"
+end
+```
+
+第一次跑**没有变红**（T13#05 用 3 个 P 全有 cid 的 fixture，`#mappable == #pages == 3`）。这是断言无效，不是控制无效——按任务书 §停止规则 6，**必须重写断言**。
+
+新增 `T13#05b`：`_emptyCidAt = 2` 让第 2 个 P 的 cid 为空，`#pages = 3` 而 `#mappable = 2`。
+
+```
+00:06 +145 -1: T13#05b a bad part does not shrink the album name's part count [E]
+00:06 +149 -1: Some tests failed.
+```
+
+**红 1 条**（T13#05b）。换回 `#pages` 后 150/150 全绿。
+
+---
+
+## 换回后复跑
+
+```
+# 2.0.300 (lua-plugins/_x/Lazer-nextgen)
+00:06 +150: All tests passed!
+
+# 2.1.0 (lua-plugins/_x/lz210/Lazer-nextgen)
+00:07 +150: All tests passed!
+```
+
+`diff -q /tmp/models.lua.bak src/bili/models.lua` 与 `diff -q /tmp/catalog.lua.bak src/bili/catalog.lua` 均无输出（逐字节相同），`RESTORED OK`。
+
+## 一条必须如实说的
+
+N3 的第一版是**假绿**。`#mappable` 与 `#pages` 在"所有 P 都有 cid"这个最常见的形状下相等，断言看得见差别只有在坏 P 存在时。这不是 fixture 的错，是断言的覆盖面不够——`T13#05b` 是这一轮补上的，不是原来就有的。
+
+---
+
+## N6：把省略号那一列还回去（本轮新增）
+
+```
+  local clipped = M.clip(source, room)      -- 改回这一行，不扣省略号
+```
+
+```
+00:06 +149 -1: T13#11 a long title is clipped so the " · N P" suffix survives [E]
+00:06 +151 -2: T13#14 the fitted album name never exceeds its column budget [E]
+00:06 +152 -2: Some tests failed.
+```
+
+**红 2 条**（T13#11、T13#14）。换回 `clip(source, room - 1)` 后 154/154 全绿，
+`diff -q /tmp/u6.bak src/bili/util.lua` 无输出（`RESTORED`）。
+
+只动这一列、别的一个字不改，两条断言同时红——这是 T13#14 有效的证据。
+N4/N5 都没有覆盖到"超预算"这件事：N4 是"完全不裁"，N5 是"固定裁标题"，
+两者都能让后缀活下来，只有 N6 才踩到边界那一列。

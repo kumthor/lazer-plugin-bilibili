@@ -4,6 +4,20 @@ local util = require("bili.util")
 
 local M = {}
 
+-- 专辑名的**总**显示列预算（标题 + ` · N P` 后缀一起算）。
+--
+-- 两处构造点（本文件的 `M.song` 与 `catalog.album_songs`）必须用同一个数，
+-- 否则同一支视频从列表进和从专辑页进会得到不同的专辑名。
+--
+-- 为什么是"总预算"而不是"标题预算"：宿主用 `maxLines:1 + overflow:ellipsis`
+-- 渲染整串（player_controls_bar.dart:131、desktop_now_playing.dart:532），省略号
+-- 加在**整串末尾**。只裁标题再把后缀接上去，等于把后缀推到窗口外。
+-- T13/T02 实测：`BV1q4FTeBEMj` 标题 53 字，` · 100 P` 会被整段吃掉。
+--
+-- 32 列 ≈ 16 个全角字，或 24 列标题 + 8 列 ` · 100 P`。整串在宽屏列表的专辑列
+-- 里不再触发宿主省略号。
+M.ALBUM_LABEL_COLUMNS = 32
+
 function M.artist(mid, name)
   return { id = util.text(mid), name = util.clean_title(name) }
 end
@@ -72,14 +86,86 @@ function M.song(item, overrides)
   end
   local id = util.text(overrides.id)
   if id == "" then id = bvid end
+  -- 标题只清一次、两处复用：`albumName` 也要这串字，各行再清一遍就会在
+  -- 40 行/桶的预算上多付一次全扫（catalog.lua:36-51 的 408 悬崖）。
+  local base_title = util.clean_title(util.field(item, "title"))
   local title = util.text(overrides.title)
-  if title == "" then title = util.clean_title(util.field(item, "title")) end
+  if title == "" then title = base_title end
+
+  -- 专辑名 = 视频标题 · N P。T13/D3。
+  --
+  -- N 的来源按行的可得性分两种，**不猜**：
+  --   * 列表行（popular / ranking / related / space_arc）与 view 都带 `videos`
+  --     （实测 popular 20/20、ranking 97/97、related 40/40，view 顶层同名字段
+  --     即分 P 数），直接用它；
+  --   * search 行与收藏夹行**没有** videos（实测 0/20 与 0/19，见
+  --     test/fixtures/search.json 与 fav_resources.json 的 `_note`），此时
+  --     albumName 就是纯标题、**不加后缀**。留空串会让
+  --     desktop_now_playing.dart:532 渲染一块零宽可点区域（该处无空值兜底），
+  --     而猜一个数字会写出"这里其实只有 1 P"的假信息。T13/D4。
+  --
+  -- 谁想把这个 `else` 分支改成 `parts = 2` 之类的默认值，先读上一条注释。
+  --
+  -- **后缀只给多 P（parts >= 2）加**。T13/D3 原来写的是"统一加后缀"，用户
+  -- 在真机看过宽屏专辑列之后改成这一条：单 P 行加 ` · 1 P` 只让专辑列与标题列
+  -- 更像重复的一行字，而 ` · 1 P` 这个信息对"能不能选 P"没有帮助——1 P 的
+  -- 视频本来就没有 P 可选。多 P 才是那个需要被看见的入口。
+  --
+  -- 因此 `parts == 1` 与 `parts == nil` 走同一条分支（纯标题）。区别只在于
+  -- 前者是"确认只有 1 P"，后者是"不知道有几 P"——**两者的显示相同，是因为
+  -- 两者的用户动作相同**（都不需要去专辑页挑 P），不是因为把未知当成 1。
+  local parts = util.opt_number(overrides.parts)
+  if parts == nil then parts = util.opt_number(util.field(item, "videos")) end
+  if parts ~= nil and parts < 1 then parts = nil end
+  local leave_album_blank = overrides.leaveAlbumBlank == true
+  -- 标题裁剪（T13/T02）：宿主用 `maxLines:1 + overflow:ellipsis` 渲染整串
+  -- （player_controls_bar.dart:131、desktop_now_playing.dart:532），省略号加在
+  -- **整串末尾**。B站标题动辄 50 列以上，` · N P` 会被整段吃掉，入口又变回
+  -- "看不出有几 P"。
+  --
+  -- 所以用 `util.fit_label`：**先量后缀，剩下的列数才给标题**。裁剪量与后缀
+  -- 宽度联动，` · 100 P` 永远留得住；只裁标题到固定宽度再拼后缀是不够的，
+  -- 那只是把后缀往前挪了一点。
+  --
+  -- 只裁 albumName，不裁 `title`：标题列有 flex:3 且用户要读全，专辑列是入口。
+  --
+  -- **没有 `videos` 的行不裁**（search / 收藏夹）：那时没有后缀要保护，裁了
+  -- 只会白丢标题信息，还会破坏"albumName 与 title 逐字相同"这条 D4 的性质。
+  -- T13#03/#04 钉的就是这条。
+  -- `leave_album_blank` 是 S1（T14）的唯一开关，只有一个调用方会用：
+  -- **没有 `videos` 的行**（search / 收藏夹）。
+  --
+  -- 为什么必须留空而不能"先写纯标题、等 song() 再改"：宿主的合并规则是
+  --   album: entry.album.isEmpty ? updated.album : entry.album
+  -- （music_platform_state.dart:635）。一旦队列条目里的 album 非空，之后
+  -- `song()` 返回什么都进不来——播放页永远停在纯标题，用户看不到"N P"。
+  -- 留空是让 `hydrate()` 有机会把它填成带后缀的那一版，而 hydrate 在每条
+  -- 播放路径上都会被调用（app_state.dart 里 _loadCurrentArtwork 有 6 处
+  -- 调用点）。
+  --
+  -- 代价（用户已确认接受）：搜索/收藏夹行在宽屏（>=940px）列表里那一列
+  -- 专辑名变空白。原本那一列与标题逐字重复，空白反而比重复干净。
+  --
+  -- 传了这个参数的行，**任何情况下都不写 albumName**，包括 parts > 1 的
+  -- 情况——但 search/收藏夹行本来就没有 parts，两条规则不会打架。
+  local album_name = ""
+  if bvid ~= "" and not leave_album_blank then
+    local album_base = base_title
+    if album_base == "" then album_base = "B站视频" end
+    if parts ~= nil and parts > 1 then
+      album_name = util.fit_label(album_base,
+                                  " · " .. tostring(parts) .. " P",
+                                  M.ALBUM_LABEL_COLUMNS)
+    else
+      album_name = album_base
+    end
+  end
   return {
     id = id,
     title = title,
     artists = { M.artist(mid, author) },
     albumId = bvid,
-    albumName = "B站视频",
+    albumName = album_name,
     coverUrl = cover,
     durationMs = duration_ms,
     contentType = "video/mp4",

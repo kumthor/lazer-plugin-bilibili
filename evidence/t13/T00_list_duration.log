@@ -1,0 +1,9 @@
+# cookie=392 chars at 2026-11-23T13:25:59.361Z
+{"tag":"ranking","status":200,"code":0,"rows":97}
+{"tag":"ranking_multi","count":2,"bvids":["BV1zKZrYAEi8/v=2","BV1q4FTeBEMj/v=100"]}
+{"tag":"popular","status":200,"code":0,"rows":20}
+{"tag":"popular_multi","count":1,"bvids":["BV15gyJzVEzy/v=5"]}
+{"tag":"compare","src":"ranking","bvid":"BV1zKZrYAEi8","title":"20世纪美国乡村经典民谣《阳光彩虹小白马》","row_videos":2,"view_pages":2,"videos_eq_pages":true,"row_duration":60,"view_top_duration":60,"pages_sum":60,"p1_duration":41,"row_eq_sum":true,"row_eq_p1":false,"top_eq_sum":true,"page_durations":[41,19]}
+{"tag":"compare","src":"ranking","bvid":"BV1q4FTeBEMj","title":"【无损音质】周杰伦歌曲精选100首 歌词版纯享 地表最高音质 每一首都是顶级文案","row_videos":100,"view_pages":100,"videos_eq_pages":true,"row_duration":25142,"view_top_duration":25142,"pages_sum":25142,"p1_duration":228,"row_eq_sum":true,"row_eq_p1":false,"top_eq_sum":true,"page_durations":[228,270,224,316,320,298,343,335,216,241,275,265,294,240,255,248,257,300,238,283,260,290,280,266,256,262,259,267,229,210,286,235,297,271,259,276,254,272,286,251,261,220,252,241,261,231,272,219,298,244,268,263,257,233,252,237,241,281,223,153,296,245,263,272,273,248,211,264,157,300,211,226,279,300,255,187,184,328,266,253,186,258,234,268,235,167,246,248,203,292,202,267,160,254,176,234,241,223,276,135]}
+{"tag":"compare","src":"popular","bvid":"BV15gyJzVEzy","title":"全新【求生者】出版编辑故事视频爆料：——“那是我第一次看到，自己本可以成为的样子","row_videos":5,"view_pages":5,"videos_eq_pages":true,"row_duration":509,"view_top_duration":509,"pages_sum":509,"p1_duration":105,"row_eq_sum":true,"row_eq_p1":false,"top_eq_sum":true,"page_durations":[105,101,101,101,101]}
+{"tag":"DONE","targets":3}

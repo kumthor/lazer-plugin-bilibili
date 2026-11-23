@@ -1,0 +1,15 @@
+# T13 最终双宿主契约测试（v0.4.5 + fit_label 定稿后）
+2026-11-23T22:40+08:00
+
+基线链：140（T12 封版）→ 150（T13/T01 命名）→ 152（T13/T02 裁剪）
+        → 153（fit_label 预算联动）→ 154（+T13#14 列上限）
+
+## 2.0.300 (lua-plugins/_x/Lazer-nextgen)
+00:06 +154: All tests passed!
+
+## 2.1.0 (lua-plugins/_x/lz210/Lazer-nextgen)
+00:06 +154: All tests passed!
+
+既有 140 条：一条未改。
+T13#11 的逐字期望本轮改过一次（12 字 → 11 字），原因见 CLIP_FINAL.log：
+旧值是 fit_label 越界 1 列的产物，断言把 bug 钉成了正确答案。
