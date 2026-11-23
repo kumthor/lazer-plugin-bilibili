@@ -1,0 +1,6 @@
+rid=3 http=200 code=0 rows=97 scoreMissing=0 scoreAscViolations=0 pid_v2=1003/1007/1024/1012/1005/1008/1010/1032/1002
+  head=0,0,0,0,0  tail=0,0,0
+  multiPart=2 singlePart=95 zeroPart=0
+rid=0 http=200 code=0 rows=100 scoreMissing=0 scoreAscViolations=0 pid_v2=1001/1008/1021/1009/1010/1005/1020/1003/1011/1007/1026/1013/1006/1029/1031/1012/1019/1022
+  head=0,0,0,0,0  tail=0,0,0
+  multiPart=5 singlePart=95 zeroPart=0

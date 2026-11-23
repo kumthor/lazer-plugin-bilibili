@@ -1,0 +1,6 @@
+# 命令: node evidence/t12/probe_popular_tname.mjs
+# 时间: 2026-11-23T12:19:21+08:00
+popular http=200 code=0 rows=20
+has tname=true tid=true tidv2=true videos=true
+tnames=预告·资讯/184 | 日常/21 | 喵星人/218 | 单机游戏/17 | 人力VOCALOID/126 | 动漫杂谈/253 | 搞笑/138 | 美食制作/76 | MAD·AMV/24 | 音乐综合/130 | 美食侦探/212 | 影视杂谈/182 | 数码/95 | 科学科普/201 | 资讯/170 | 同人·手书/47 | 时尚潮流/159 | 购车攻略/227
+multiPart=0

@@ -1,0 +1,53 @@
+=== rid=3 http=200 code=0 rows=97 ===
+  pid_v2|pid_name_v2 分布:
+    1002|娱乐  x1
+    1003|音乐  x86
+    1005|二次元  x2
+    1007|鬼畜  x3
+    1008|游戏  x1
+    1010|知识  x1
+    1012|科技数码  x1
+    1024|动物  x1
+    1032|其他  x1
+  score 取值集合: 0
+  score 类型: number
+  前 6 行（score / pid_v2 / pid_name_v2 / tname / videos / title）:
+    score=0 pid_v2=1003 pid_name_v2=音乐 tname=翻唱 videos=1 title=给我们的组合起个名！
+    score=0 pid_v2=1007 pid_name_v2=鬼畜 tname=演奏 videos=2 title=20世纪美国乡村经典民谣《阳光彩虹小白马》
+    score=0 pid_v2=1003 pid_name_v2=音乐 tname=乐评盘点 videos=1 title=循环歌单|【八方来财】|“【来财の小曲】谁懂憋佬仔出来时
+    score=0 pid_v2=1003 pid_name_v2=音乐 tname=乐评盘点 videos=1 title=盘点男组合那些神级翻唱，你最喜欢哪个组合呢？
+    score=0 pid_v2=1003 pid_name_v2=音乐 tname=演奏 videos=1 title=" 阳 光 唢 呐 小 白 马 "
+    score=0 pid_v2=1003 pid_name_v2=音乐 tname=MV videos=1 title=向佐VS药水哥！《剑灵2》双人对决mv《灵帧起手》上线
+  音乐区(pid_v2==1003)行: 86/97
+
+=== rid=0 http=200 code=0 rows=100 ===
+  pid_v2|pid_name_v2 分布:
+    1001|影视  x4
+    1003|音乐  x8
+    1005|二次元  x20
+    1006|绘画  x2
+    1007|鬼畜  x7
+    1008|游戏  x23
+    1009|资讯  x3
+    1010|知识  x12
+    1011|人工智能  x1
+    1012|科技数码  x1
+    1013|汽车  x1
+    1019|手工  x4
+    1020|美食  x5
+    1021|小剧场  x5
+    1022|旅游出行  x1
+    1026|医疗保健  x1
+    1029|vlog  x1
+    1031|生活经验  x1
+  score 取值集合: 0
+  score 类型: number
+  前 6 行（score / pid_v2 / pid_name_v2 / tname / videos / title）:
+    score=0 pid_v2=1001 pid_name_v2=影视 tname=预告·资讯 videos=1 title=当我用AI续写爱情公寓4关谷悠悠婚礼【AI全民制作人】
+    score=0 pid_v2=1008 pid_name_v2=游戏 tname=单机游戏 videos=1 title=【IGN独家】《鸣潮：永明的烬焰》实机演示
+    score=0 pid_v2=1008 pid_name_v2=游戏 tname=单机游戏 videos=1 title=侠盗猎车手6 第一集，GTA 6 Part 1
+    score=0 pid_v2=1021 pid_name_v2=小剧场 tname=日常 videos=1 title=我是Tim，我爹太离谱了…
+    score=0 pid_v2=1001 pid_name_v2=影视 tname=明星综合 videos=1 title=【登陆少年】朱志鑫21岁生日特别企划短片《署名》(Sig
+    score=0 pid_v2=1009 pid_name_v2=资讯 tname=日常 videos=1 title=多国领导人明确表态：坚定恪守一个中国原则
+  音乐区(pid_v2==1003)行: 8/100
+

@@ -482,7 +482,7 @@ int? _pastEndCode(String kind) {
     case 'reply_hot':
       return -400; // measured: pn past the end is 请求错误, not an empty page
     case 'space_arc':
-      return -799; // measured: -799 with an empty vlist (evidence/t8/R1)
+      return -799; // measured: -799 with an empty vlist (evidence/t8/R1_out_of_range.log)
     default:
       return null;
   }
@@ -794,7 +794,7 @@ Future<Map<String, dynamic>> _handler(Map<String, dynamic> spec) async {
 final _manifest = PluginManifest.fromJson(const {
   'id': 'community.bilibili.music',
   'name': '哔哩哔哩',
-  'version': '0.4.3',
+  'version': '0.4.4',
   'provider': 'bilibili',
   'apiVersion': 1,
   // 与 src/manifest.json 逐项一致（T6#21 会断言；D12 曾是这里停在 v0.1.0）。
@@ -854,6 +854,47 @@ List<dynamic> _rows(Object? value) => value is List ? value : <dynamic>[];
 /// A Lua list crosses the bridge as `[]` when non-empty and `{}` when empty, so
 /// every list-returning op is read through this instead of a hard `as List`.
 List<dynamic> _list(Object? value) => value is List ? value : <dynamic>[];
+
+/// 热门全单 P 的 20 行（真机形状）。
+///
+/// `pid_v2` 必须写：真机 popular 20/20 行都带它（evidence/t12/R5_popular_pid.log），
+/// 而音乐架只收 `pid_v2 == 1003` 的行。缺字段会被当成 0（非音乐区），
+/// 于是「热门全单 P」这个 fixture 会连候选都进不去，测出来的空架不是被测行为。
+/// 需要非音乐区的反例时传 `pidV2`。
+List<Map<String, dynamic>> _singlePartHot(int count, {int pidV2 = 1003}) =>
+    List.generate(count, (i) {
+      final n = i + 1;
+      return <String, dynamic>{
+        'bvid': 'BVhot${n.toString().padLeft(5, '0')}',
+        'title': '热门 $n',
+        'pic': '//i0.hdslb.com/bfs/hot/$n.jpg',
+        'duration': '3:00',
+        'author': 'UP$n',
+        'mid': 100 + n,
+        'videos': 1,
+        'pid_v2': pidV2,
+      };
+    });
+
+/// 榜单行（真机 ranking/v2 每行都带 `pid_v2`，见 evidence/t12/R1_music_ranking.log）。
+///
+/// **必须**同时把 bvid 写进 `_multiPartHot`：fixture 的 `view`
+/// 只对集合内的 bvid 承认多 P，否则 `view` 回 1 个 P、`songCount` 被 `#pages`
+/// 覆盖成 1，"这是专辑"的断言会静默通过而实际只有 1 首（T10 §4 M6）。
+List<Map<String, dynamic>> _multiPartRank(int count, {int videos = 3, int pidV2 = 1003}) =>
+    List.generate(count, (i) {
+      final n = i + 1;
+      final bvid = 'BVrank${n.toString().padLeft(5, '0')}';
+      return <String, dynamic>{
+        'bvid': bvid,
+        'title': '榜单 $n',
+        'pic': '//i0.hdslb.com/bfs/rank/$n.jpg',
+        'duration': '3:00',
+        'owner': {'mid': 300 + n, 'name': 'UP$n'},
+        'videos': videos,
+        'pid_v2': pidV2,
+      };
+    });
 
 void main() {
   late LuaPluginRuntime rt;
@@ -1936,10 +1977,14 @@ void main() {
 
   // ---- T04: multi-part entry point ----
 
-  test('T6#15 homeFeed.albums only carries multi-part videos, within budget', () async {
-    // 20 条热门，只有第 1、3、7 条是多 P；其余单 P。
+  test('T6#15 homeFeed.albums carries music-zone rows, single-P included', () async {
+    // 20 条热门，全部音乐区；其中第 1、3、7 条是多 P，其余单 P。
     // T8/T03: `videos` 是判定依据（真站每行都带，T7 已验 24/24 与 pages 一致），
     // 所以 fixture 必须像真站一样把它写出来，否则测的是"缺字段时怎么猜"。
+    //
+    // T12 语义变更：单 P 行**也是**专辑候选（一个 1 首歌的专辑，`songCount=1`
+    // 是真实值）。旧断言 `albums.length == 3` 保护的是"只收多 P"，
+    // 而那正是把音乐架饿死的原因。现在 20 条热门全上架，`view` 仍只发 3 次。
     _multiPartHot = {'BVhot00001', 'BVhot00003', 'BVhot00007'};
     _paged('popular', (pn, ps) => List.generate(20, (i) {
       final n = i + 1;
@@ -1952,19 +1997,29 @@ void main() {
         'author': 'UP$n',
         'mid': 100 + n,
         'videos': _multiPartHot.contains(bvid) ? 3 : 1,
+        'pid_v2': 1003,
       };
     }), pastEnd: PastEnd.notPaged);
+    // 榜单钉成空，候选只来自热门，才能把「20 条全上架」数清楚。
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
     _resetCalls();
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
-    final albums = _list(feed['albums']);
-    // T8/D5: 只有 3 条多 P，就只发 3 次 view —— 旧代码固定发 8 次。
-    expect(_callsOf('view'), 3, reason: '只对 videos>1 的行发 view');
-    expect(albums.length, 3);
-    for (final row in albums.cast<Map>()) {
+    final albums = _list(feed['albums']).cast<Map>();
+    // T8/D5: 只有 3 条多 P，就只发 3 次 view —— 单 P 行不探测。
+    expect(_callsOf('view'), 3, reason: '只对 videos>1 的行发 view；单 P 行零请求');
+    expect(albums.length, 20, reason: '音乐区单 P 与多 P 都上架');
+    expect(albums.map((a) => a['id']).toList(),
+        List.generate(20, (i) => 'BVhot${(i + 1).toString().padLeft(5, '0')}'),
+        reason: '热门层保持 popular 原序');
+    for (final row in albums) {
       expect(row.containsKey('songCount'), isTrue);
-      expect((row['songCount'] as int), greaterThan(1));
+      expect(row['songCount'] as int, greaterThanOrEqualTo(1));
     }
+    final single = albums.firstWhere((a) => a['id'] == 'BVhot00002');
+    expect(single['songCount'], 1, reason: '单 P 专辑的 songCount 是真实值 1，不是占位');
+    final multi = albums.firstWhere((a) => a['id'] == 'BVhot00003');
+    expect(multi['songCount'], 3, reason: '多 P 行由 view 的 pages 补全');
   });
 
   test('T6#16 homeFeed and albums() share one wide shelf cache', () async {
@@ -1976,7 +2031,7 @@ void main() {
     // Since T10 both entry points read the same candidate set (popular + RAW
     // chart rows), so separate caches would only pay for the same list twice.
     // The red that this rename replaces was expected and is registered in
-    // TASK-T10 §6: the home page now reads the chart ONCE, and the shelf reuses
+    // v0.4.2: the home page now reads the chart ONCE, and the shelf reuses
     // that result.
     _resetCalls();
     final feed = await rt.invoke('homeFeed') as Map;
@@ -1988,7 +2043,7 @@ void main() {
 
     final popularAfterHome = _callsOf('popular');
     final rankingAfterHome = _callsOf('ranking');
-    final shelf = _list(await rt.invoke('albums', {'limit': 18, 'offset': 0}));
+    final shelf = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
     expect(_callsOf('popular') - popularAfterHome, 0, reason: '共用 wide：popular 不得重发');
     expect(_callsOf('ranking') - rankingAfterHome, 0, reason: '共用 wide：ranking 不得重发');
     expect(_callsOf('view'), afterHomeViews, reason: '共用 wide：view 不得重发');
@@ -1997,7 +2052,7 @@ void main() {
     final feed2 = await rt.invoke('homeFeed') as Map;
     expect(_list(feed2['albums']).length, homeAlbums.length,
         reason: '第二次 homeFeed 必须命中同一份缓存');
-    final shelf2 = _list(await rt.invoke('albums', {'limit': 18, 'offset': 0}));
+    final shelf2 = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
     expect(shelf2.length, shelf.length, reason: '第二次 albums 必须命中同一份缓存');
     expect(_callsOf('view'), afterHomeViews, reason: '两次复查都不得新增 view');
 
@@ -2070,7 +2125,7 @@ void main() {
     }
     // 反向：声明了 browseAlbums 就必须真有 albums op（否则 Future.wait 整体抛）。
     if (declared.contains('browseAlbums')) {
-      final result = await rt.invoke('albums', {'limit': 18, 'offset': 0});
+      final result = await rt.invoke('albums', {'limit': 40, 'offset': 0});
       expect(result is Map && result.containsKey('error'), isFalse,
           reason: 'browseAlbums 已声明，albums 必须可用');
     }
@@ -2529,7 +2584,7 @@ void main() {
 
   test('T9#18 a non-empty page with no count does not latch the cursor', () async {
     // 真站形态：行照给，但 page 里没有 count/acount。旧代码把 0 写成 total，
-    // 之后 skip >= 0 恒真，offset=20 起永远返回空表（evidence/t9/R3）。
+    // 之后 skip >= 0 恒真，offset=20 起永远返回空表（evidence/t9/R3_comments_latch.log）。
     _paged('reply', (pn, ps) => _commentRows((pn - 1) * ps + 1, ps),
         pastEnd: PastEnd.errorCode);
     _omitCount.add('reply');
@@ -2692,6 +2747,9 @@ void main() {
   test('T8#16 homeFeed spends view requests only on multi-part rows', () async {
     // 20 条热门里 5 条多 P：旧代码固定 8 次 view（且可能一条专辑都没换到），
     // 新代码只发 5 次。R3 实测旧行为是 10 请求里 8 次 view、albums 恒空。
+    //
+    // T12：单 P 行现在也上架，所以这里断言的是**view 次数**而不是架长。
+    // 架长由 T6#15 钉（20 条全上架）；本条的职责是「单 P 行一个请求都不发」。
     _multiPartHot = {'BVhot00002', 'BVhot00005', 'BVhot00009',
                      'BVhot00013', 'BVhot00017'};
     _paged('popular', (pn, ps) => List.generate(20, (i) {
@@ -2705,50 +2763,36 @@ void main() {
         'author': 'UP$n',
         'mid': 100 + n,
         'videos': _multiPartHot.contains(bvid) ? 4 : 1,
+        'pid_v2': 1003,
       };
     }), pastEnd: PastEnd.notPaged);
+    // 榜单钉空：候选全部来自热门，view 次数才只由热门的 5 条多 P 决定。
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
     _resetCalls();
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
     expect(_callsOf('view'), 5,
         reason: '每次 view 都必须由一个 videos>1 的行触发');
-    expect(_list(feed['albums']).length, 5, reason: 'albums 不得为空');
+    expect(_list(feed['albums']).length, 20,
+        reason: '音乐区 20 行全上架，其中 15 条单 P 零请求');
     expect(_callsOf('popular'), 1, reason: 'popular 只请求一次，两个桶共用');
-    // T10：候选集现在是热门 + 榜单原始行。静态 ranking fixture 只有 1 行且
-    // `videos=1`，贡献 0 个候选，所以那 5 次 view 仍然全部来自热门——
-    // 断言按 kind 分别计数，不再用"整张请求表"代表"热门一次"。
     expect(_callsOf('ranking'), 1, reason: '多出来的这一次只属于榜单族');
   });
 
-  test('T8#17 a feed with no multi-part row costs zero view requests', () async {
+  test('T8#17 an all-single-part feed costs zero view requests', () async {
     // R3 的真机结论就是"8 次 view 换 0 专辑"。全单 P 时新代码必须 0 次。
-    // T10：条件收紧为「热门和榜单**都**全单 P」——只要榜单有多 P 行，
-    // 首页专辑架就该有内容（这正是本轮修的东西）。
+    // T12：架不再为空 —— 单 P 也是专辑。本条钉的是「零 view」，架长由
+    // T6#15/T10#04 钉。
     _multiPartHot = <String>{};
-    _paged('popular', (pn, ps) => List.generate(20, (i) {
-      final n = i + 1;
-      return <String, dynamic>{
-        'bvid': 'BVhot${n.toString().padLeft(5, '0')}',
-        'title': '热门 $n',
-        'pic': '//i0.hdslb.com/bfs/hot/$n.jpg',
-        'duration': '3:00',
-        'author': 'UP$n',
-        'mid': 100 + n,
-        'videos': 1,
-      };
-    }), pastEnd: PastEnd.notPaged);
-    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[
-          {
-            'bvid': 'BVrank00001', 'title': '榜单 1',
-            'pic': '//i0.hdslb.com/bfs/rank/1.jpg', 'duration': '3:00',
-            'owner': {'mid': 301, 'name': 'UP1'}, 'videos': 1,
-          },
-        ], pastEnd: PastEnd.notPaged);
+    _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => _multiPartRank(1, videos: 1),
+        pastEnd: PastEnd.notPaged);
     _resetCalls();
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
     expect(_callsOf('view'), 0, reason: '两个来源都没有多 P 行，就不该有任何 view 探测');
-    expect(_list(feed['albums']), isEmpty);
+    expect(_list(feed['albums']).length, 21,
+        reason: '热门 20 + 榜单 1，全部单 P 也全部上架');
     expect(_list(feed['featuredSongs']).length, 20, reason: '首页歌曲不受影响');
   });
 
@@ -2767,29 +2811,37 @@ void main() {
         'author': 'UP$n',
         'mid': 100 + n,
         'videos': 1,
+        'pid_v2': 1003,
       };
     }), pastEnd: PastEnd.notPaged);
     // 榜单 fixture 只有 1 行（真站抓包的 1 条）；把它标成多 P 才能证明
     // albums() 读的是原始行（映射后的 song 行没有 videos 字段）。
+    // 同时补 `pid_v2`：真机 ranking/v2 每行都带它，缺字段会被当成非音乐区。
     final ranking = _fixture('ranking');
     final parsed = jsonDecode(ranking) as Map<String, dynamic>;
     final rows = ((parsed['data'] as Map)['list'] as List).cast<Map>();
     expect(rows, isNotEmpty, reason: 'ranking fixture 不能为空');
     for (final row in rows) {
       row['videos'] = 3;
+      row['pid_v2'] = 1003;
     }
     _rankingOverride = jsonEncode(parsed);
     _resetCalls();
     // `view` 必须同意行里的说法（videos=3），否则 songCount 会被 pages 覆盖成 1。
     _multiPartHot = <String>{for (final row in rows) row['bvid'] as String};
-    final shelf = _list(await rt.invoke('albums', {'limit': 18, 'offset': 0}));
-    expect(shelf.length, 1, reason: '榜单行是多 P，必须出现在专辑架上');
-    expect((shelf.first as Map)['songCount'], greaterThan(1));
+    // T12：单 P 热门行也上架，所以 limit 必须大于热门行数才能看见榜单那一行。
+    final shelf = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
+    expect(shelf.length, 21, reason: '热门 20 + 榜单 1');
+    final chartIds = <String>{for (final row in rows) row['bvid'] as String};
+    final fromChart =
+        shelf.cast<Map>().where((a) => chartIds.contains('${a['id']}')).toList();
+    expect(fromChart.length, 1, reason: '榜单行是多 P，必须出现在专辑架上');
+    expect(fromChart.first['songCount'], greaterThan(1));
     // T10: the tail of this test used to read `ranking == 0` after `homeFeed`
     // and call it "home does not read the chart". That passed for the WRONG
     // reason — `albums()` above had already filled the cache, so homeFeed hit
     // it. The assertion text had stopped describing the code (registered as a
-    // false green in TASK-T10 §6). What is true now: home reuses the same
+    // false green in the v0.4.2 notes). What is true now: home reuses the same
     // `wide` entry, so it costs nothing new and yields the same shelf.
     _resetCalls();
     final feed = await rt.invoke('homeFeed') as Map;
@@ -2810,7 +2862,7 @@ void main() {
 
   test('T8#19 albumSongs returns a full page instead of clamping to 30', () async {
     // 旧断言保护的是 D1 本身（"夹到 30 行"）。30 行 + limit=100 让宿主在
-    // 第一页就判 hasMore=false，第 31 个 P 起永久不可达（evidence/t9/R20）。
+    // 第一页就判 hasMore=false，第 31 个 P 起永久不可达（evidence/t9/R20_album_host_hasmore_live.log）。
     // 现在：单页返回 min(limit, 剩余)，宿主自己翻页。
     _multiPart = true;
     _multiPartParts = 40;
@@ -2982,39 +3034,11 @@ void main() {
   // 形状（R25 408），`chart_raw` 只读原始行（R27 6 请求正常）。所以修法只能是
   // chart_raw，且降级必须窄到「榜单这一条请求」。
 
-  /// 热门全单 P 的 20 行（真机形状）。
-  List<Map<String, dynamic>> _singlePartHot(int count) => List.generate(count, (i) {
-        final n = i + 1;
-        return <String, dynamic>{
-          'bvid': 'BVhot${n.toString().padLeft(5, '0')}',
-          'title': '热门 $n',
-          'pic': '//i0.hdslb.com/bfs/hot/$n.jpg',
-          'duration': '3:00',
-          'author': 'UP$n',
-          'mid': 100 + n,
-          'videos': 1,
-        };
-      });
 
-  /// 榜单多 P 行。**必须**同时把 bvid 写进 `_multiPartHot`：fixture 的 `view`
-  /// 只对集合内的 bvid 承认多 P，否则 `view` 回 1 个 P、`songCount` 被 `#pages`
-  /// 覆盖成 1，"这是专辑"的断言会静默通过而实际只有 1 首（T10 §4 M6）。
-  List<Map<String, dynamic>> _multiPartRank(int count, {int videos = 3}) =>
-      List.generate(count, (i) {
-        final n = i + 1;
-        final bvid = 'BVrank${n.toString().padLeft(5, '0')}';
-        return <String, dynamic>{
-          'bvid': bvid,
-          'title': '榜单 $n',
-          'pic': '//i0.hdslb.com/bfs/rank/$n.jpg',
-          'duration': '3:00',
-          'owner': {'mid': 300 + n, 'name': 'UP$n'},
-          'videos': videos,
-        };
-      });
-
-  test('T10#01 homeFeed.albums carries the ranking multi-part rows', () async {
-    // 热门全单 P（真机事实），榜单有 2 个多 P。旧代码只读热门 → 专辑架为空。
+  test('T10#01 homeFeed.albums takes music-zone popular rows plus the music chart',
+      () async {
+    // 热门全单 P 且全音乐区；榜单有 2 个多 P。旧代码只读热门 → 专辑架为空。
+    // T12：单 P 也上架，所以热门那 20 行也进候选，顺序是「popular 层在前」。
     _multiPartHot = {'BVrank00001', 'BVrank00002'};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(2), pastEnd: PastEnd.notPaged);
@@ -3022,13 +3046,51 @@ void main() {
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
     final albums = _list(feed['albums']).cast<Map>();
-    expect(albums.map((a) => a['id']).toList(), ['BVrank00001', 'BVrank00002'],
-        reason: '多 P 候选只能来自榜单：热门 20 行全是单 P');
-    for (final album in albums) {
+    expect(albums.map((a) => a['id']).toList(), <String>[
+      ...List.generate(20, (i) => 'BVhot${(i + 1).toString().padLeft(5, '0')}'),
+      'BVrank00001',
+      'BVrank00002',
+    ], reason: '分层顺序：popular 音乐区行在前（保持原序），榜单行在后');
+    for (final album in albums.where((a) => '${a['id']}'.startsWith('BVrank'))) {
       expect(album['songCount'], 3, reason: 'view 必须同意行里的 videos');
     }
+    expect(_callsOf('view'), 2, reason: '只有榜单那 2 条多 P 需要 view');
     expect(_list(feed['featuredSongs']).length, 20,
         reason: 'featuredSongs 仍只取当前一页热门，不受候选集影响');
+  });
+
+  test('T10#01b a non-music popular row never reaches the shelf', () async {
+    // 反例一：热门里有音乐区单 P 行，也有非音乐区行。只有前者能上架。
+    // `pid_v2 = 0` 是真机真实取值（国产动画 / 综艺），不是缺字段。
+    _multiPartHot = <String>{};
+    _paged('popular', (pn, ps) => <Map<String, dynamic>>[
+          {..._singlePartHot(1).first as Map<String, dynamic>, 'bvid': 'BVmusic0001', 'pid_v2': 1003},
+          {..._singlePartHot(1).first as Map<String, dynamic>, 'bvid': 'BVgame00001', 'pid_v2': 1008},
+          {..._singlePartHot(1).first as Map<String, dynamic>, 'bvid': 'BVzero00001', 'pid_v2': 0},
+        ], pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    expect(_list(feed['albums']).map((a) => (a as Map)['id']).toList(),
+        ['BVmusic0001'],
+        reason: 'pid_v2=1008 与 pid_v2=0 都不是音乐区，必须拒掉');
+  });
+
+  test('T10#01c a music-zone multi-part row is accepted, a non-music one is not',
+      () async {
+    // 反例二：同一层里放两条多 P —— 音乐区的收、非音乐区的拒。
+    _multiPartHot = {'BVmusicM001', 'BVgameM0001'};
+    _paged('popular', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[
+          {..._multiPartRank(1).first as Map<String, dynamic>, 'bvid': 'BVmusicM001', 'pid_v2': 1003},
+          {..._multiPartRank(1).first as Map<String, dynamic>, 'bvid': 'BVgameM0001', 'pid_v2': 1008},
+        ], pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    expect(_list(feed['albums']).map((a) => (a as Map)['id']).toList(),
+        ['BVmusicM001'],
+        reason: '音乐区多 P 收，非音乐区多 P 拒 —— 旧代码只按 videos>1 收，两个都会进');
+    expect(_callsOf('view'), 1, reason: '被拒的行不该产生 view');
   });
 
   test('T10#03 a bvid present in both sources yields one album and one view',
@@ -3039,52 +3101,87 @@ void main() {
           {
             'bvid': 'BVhot00001', 'title': '热门 1', 'pic': '//i0.hdslb.com/bfs/hot/1.jpg',
             'duration': '3:00', 'author': 'UP1', 'mid': 101, 'videos': 1,
+            'pid_v2': 1003,
           },
           {
             'bvid': 'BVhot00003', 'title': '热门 3', 'pic': '//i0.hdslb.com/bfs/hot/3.jpg',
             'duration': '3:00', 'author': 'UP3', 'mid': 103, 'videos': 3,
+            'pid_v2': 1003,
           },
         ], pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => <Map<String, dynamic>>[
           {
             'bvid': 'BVhot00003', 'title': '榜单 3', 'pic': '//i0.hdslb.com/bfs/rank/3.jpg',
             'duration': '3:00', 'owner': {'mid': 103, 'name': 'UP3'}, 'videos': 3,
+            'pid_v2': 1003,
           },
         ], pastEnd: PastEnd.notPaged);
 
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
     final albums = _list(feed['albums']).cast<Map>();
-    expect(albums.length, 1, reason: '同一 bvid 只能出一个专辑');
-    expect(albums.first['id'], 'BVhot00003');
+    expect(albums.map((a) => a['id']).toList(), ['BVhot00001', 'BVhot00003'],
+        reason: '去重后两个 bvid，popular 层在前');
+    expect(albums.first['songCount'], 1, reason: '单 P 行 songCount 是真实值');
+    expect(albums.last['songCount'], 3, reason: '多 P 行由 view 补全');
     expect(_callsOf('view'), 1, reason: '去重后只发一次 view');
   });
 
-  test('T10#04 two all-single-part sources cost zero view and an empty shelf',
+  test('T10#04 two all-single-part sources still form a shelf with zero view',
       () async {
+    // T12 语义变更的核心：旧断言是「两源全单 P → 空架」，那是被 `videos > 1`
+    // 饿出来的。单 P 是真实专辑（1 首歌），架必须非空，且零 view。
     _multiPartHot = <String>{};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(2, videos: 1),
         pastEnd: PastEnd.notPaged);
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
-    expect(_list(feed['albums']), isEmpty);
-    expect(_callsOf('view'), 0, reason: '两个来源都没有多 P 行');
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.length, 22, reason: '热门 20 + 榜单 2，全部单 P 也全部上架');
+    expect(albums.every((a) => a['songCount'] == 1), isTrue,
+        reason: '全单 P 时每行 songCount 必须是 1');
+    expect(_callsOf('view'), 0, reason: '两个来源都没有多 P 行，零请求');
     expect(_list(feed['featuredSongs']).length, 20);
+  });
+
+  test('T10#04b a popular page with zero music rows still forms a shelf',
+      () async {
+    // R5 的真机形态：20 行全非音乐区（含 2 行 pid_v2=0）。架子必须由榜单
+    // 单独撑起来，不能因为 popular 没有音乐行就变空。
+    _multiPartHot = <String>{};
+    _paged('popular', (pn, ps) => <Map<String, dynamic>>[
+          ..._singlePartHot(18, pidV2: 1008),
+          ..._singlePartHot(2, pidV2: 0),
+        ], pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => _multiPartRank(3, videos: 1),
+        pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.map((a) => a['id']).toList(),
+        ['BVrank00001', 'BVrank00002', 'BVrank00003'],
+        reason: 'popular 无音乐行 → 候选退化为纯榜单，架子仍成形');
+    expect(_callsOf('view'), 0);
   });
 
   test('T10#05 a ranking failure degrades to popular instead of failing the page',
       () async {
-    // 热门里有一行多 P（BV1xx411c7mD 是 popular.json 的 videos=2 行）。
-    _multiPartHot = {'BV1xx411c7mD'};
+    // 热门里有一行音乐区多 P。榜单失败时只用热门候选。
+    _multiPartHot = {'BVhot00003'};
+    _paged('popular', (pn, ps) => <Map<String, dynamic>>[
+          ..._singlePartHot(2),
+          {..._singlePartHot(1).first as Map<String, dynamic>, 'bvid': 'BVhot00003', 'videos': 3},
+        ], pastEnd: PastEnd.notPaged);
     _forcedError('ranking', -412);
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
     expect(_list(feed['featuredSongs']), isNotEmpty, reason: '热门是首页主内容，必须照常');
     final albums = _list(feed['albums']).cast<Map>();
-    expect(albums.length, 1, reason: '降级后只用热门候选');
-    expect(albums.first['id'], 'BV1xx411c7mD');
-    expect(albums.first['songCount'], 3,
+    expect(albums.map((a) => a['id']).toList(),
+        ['BVhot00001', 'BVhot00002', 'BVhot00003'],
+        reason: '降级后只用热门候选');
+    expect(albums.last['songCount'], 3,
         reason: 'M6：该 bvid 已在 _multiPartHot，view 才承认它是多 P');
   });
 
@@ -3095,14 +3192,18 @@ void main() {
     _forcedError('ranking', -412);
     final first = await rt.invoke('homeFeed') as Map;
     _expectNoError(first);
-    expect(_list(first['albums']), isEmpty, reason: '第一次榜单失败、热门全单 P');
+    expect(_list(first['albums']).map((e) => (e as Map)['id']).toList(),
+        List.generate(20, (i) => 'BVhot${(i + 1).toString().padLeft(5, '0')}'),
+        reason: '第一次榜单失败 → 只剩热门那 20 条音乐区行');
     final before = _callsOf('ranking');
     _forcedErrors.remove('ranking');
     final second = await rt.invoke('homeFeed') as Map;
     _expectNoError(second);
     expect(_callsOf('ranking') - before, 1, reason: '降级结果不得占住缓存，必须重试榜单');
-    expect(_list(second['albums']).map((e) => (e as Map)['id']).toList(),
-        ['BVrank00001']);
+    expect(_list(second['albums']).map((e) => (e as Map)['id']).toList(), <String>[
+      ...List.generate(20, (i) => 'BVhot${(i + 1).toString().padLeft(5, '0')}'),
+      'BVrank00001',
+    ], reason: '重试成功后榜单行补进第二层');
   });
 
   test('T10#07 a degraded result never occupies the shared wide cache', () async {
@@ -3113,10 +3214,13 @@ void main() {
     _expectNoError(await rt.invoke('homeFeed'));
     _forcedErrors.remove('ranking');
     final before = _callsOf('ranking');
-    final shelf = _list(await rt.invoke('albums', {'limit': 18, 'offset': 0}));
+    final shelf = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
     expect(_callsOf('ranking') - before, 1,
         reason: '若降级结果占了 wide，这里会零请求返回热门集');
-    expect(shelf.map((e) => (e as Map)['id']).toList(), ['BVrank00001']);
+    expect(shelf.map((e) => (e as Map)['id']).toList(), <String>[
+      ...List.generate(20, (i) => 'BVhot${(i + 1).toString().padLeft(5, '0')}'),
+      'BVrank00001',
+    ], reason: '重试后榜单行必须在架尾出现');
   });
 
   test('T10#08 albums() after a successful homeFeed costs no new request', () async {
@@ -3128,7 +3232,7 @@ void main() {
     final popularBefore = _callsOf('popular');
     final rankingBefore = _callsOf('ranking');
     final viewBefore = _callsOf('view');
-    final shelf = _list(await rt.invoke('albums', {'limit': 18, 'offset': 0}));
+    final shelf = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
     expect(_callsOf('popular') - popularBefore, 0);
     expect(_callsOf('ranking') - rankingBefore, 0);
     expect(_callsOf('view') - viewBefore, 0);
@@ -3141,7 +3245,7 @@ void main() {
     _multiPartHot = {'BVrank00001'};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(1), pastEnd: PastEnd.notPaged);
-    final shelf = _list(await rt.invoke('albums', {'limit': 18, 'offset': 0}));
+    final shelf = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
     expect(shelf, isNotEmpty);
     final popularBefore = _callsOf('popular');
     final rankingBefore = _callsOf('ranking');
@@ -3156,15 +3260,21 @@ void main() {
 
   test('T10#10 a 100-row all-multi-part chart stays inside ALBUM_LIMIT', () async {
     // 最坏输入：榜单 100 行全多 P。硬上限是 16 次 view（尝试数），不是成功数。
+    // T12：热门 20 行（单 P）不需要 view，先全部上架；榜单层在第 17 条多 P
+    // 处停手。所以架长 = 20 + 16，view = 16。
     final rows = _multiPartRank(100);
     _multiPartHot = {for (final row in rows) row['bvid'] as String};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => rows, pastEnd: PastEnd.notPaged);
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
-    expect(_list(feed['albums']).length, lessThanOrEqualTo(16));
-    expect(_callsOf('view'), lessThanOrEqualTo(16),
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.length, 20 + 16,
+        reason: '20 条单 P 热门 + 16 条到顶的多 P 榜单');
+    expect(_callsOf('view'), 16,
         reason: 'ALBUM_LIMIT 限制的是尝试数，一次失败不得让它越过 16');
+    expect(albums.where((a) => '${a['id']}'.startsWith('BVrank')).length, 16,
+        reason: '榜单层只放进 16 条');
   });
 
   test('T10#11 one failing view keeps the rest of the shelf', () async {
@@ -3175,9 +3285,13 @@ void main() {
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
     final albums = _list(feed['albums']).cast<Map>();
-    expect(albums.map((a) => a['id']).toList(), ['BVrank00001', 'BVrank00002'],
-        reason: '一条 view 失败不得清空整架');
-    expect(albums.first['songCount'], 3,
+    expect(albums.map((a) => a['id']).toList(), <String>[
+      ...List.generate(20, (i) => 'BVhot${(i + 1).toString().padLeft(5, '0')}'),
+      'BVrank00001',
+      'BVrank00002',
+    ], reason: '一条 view 失败不得清空整架');
+    final failed = albums.firstWhere((a) => a['id'] == 'BVrank00001');
+    expect(failed['songCount'], 3,
         reason: '失败行回退到 feed 行的 videos，而不是 0 或空');
   });
 
@@ -3185,7 +3299,7 @@ void main() {
       () async {
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _forcedError('ranking', -412);
-    final result = await rt.invoke('albums', {'limit': 18, 'offset': 0});
+    final result = await rt.invoke('albums', {'limit': 40, 'offset': 0});
     expect(result is Map && result.containsKey('error'), isTrue,
         reason: 'albums() 是显式浏览操作，榜单失败必须照旧上抛');
     final error = (result as Map)['error'] as Map;

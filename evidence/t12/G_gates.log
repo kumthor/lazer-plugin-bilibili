@@ -1,0 +1,14 @@
+files checked: auth.lua, catalog.lua, errors.lua, http.lua, ids.lua, lyrics.lua, models.lua, pager.lua, store.lua, stream.lua, util.lua, wbi.lua
+C1 (disallowed host API): 0
+C3 (# on non-table): 0
+C4 (% classes in code): 0
+C5 (unsupported syntax): 0
+C6 (capability without op): 0
+C7 (describe vs manifest): 0
+C8 (fixture missing wire fields): 0
+C9 (comment points at a missing evidence file): 0
+C10 (bare util.text(id) on a song identity): 0
+C11 (_paged without pastEnd): 0
+C12 (cited number absent from cited file): 0
+
+GATES: PASS

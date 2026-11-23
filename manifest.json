@@ -1,7 +1,7 @@
 {
   "id": "community.bilibili.music",
   "name": "哔哩哔哩",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "把 B 站当作曲库：搜索、播放、歌词、收藏夹、排行榜。改编自 BiliMusic 的接口实现。",
   "author": "YG",
   "entry": "main.lua",

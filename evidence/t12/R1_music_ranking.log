@@ -1,0 +1,12 @@
+# 命令: node evidence/t12/probe_music_ranking.mjs
+# 时间: 2026-11-23T12:19:19+08:00
+rid=3 http=200 code=0 rows=97 multiPart=2 pubdateDesc=false
+   keys=aid,videos,tid,tname,copyright,pic,title,pubdate,ctime,desc,state,duration,rights,owner,stat,dynamic,cid,dimension,short_link_v2,up_from_v2,first_frame,pub_location,cover43,tidv2,tnamev2,pid_v2,pid_name_v2,attribute_v3,current_state,global_state,bvid,score,others,enable_vt
+   BV17VZpY1ENA pubdate=1743423401 videos=1 给我们的组合起个名！
+   BV1zKZrYAEi8 pubdate=1743346017 videos=2 20世纪美国乡村经典民谣《阳光彩虹小白马》
+   BV11eZ8Y5EVi pubdate=1743552000 videos=1 循环歌单|【八方来财】|“【来财の小曲】谁懂憋佬
+rid=0 http=200 code=0 rows=100 multiPart=5 pubdateDesc=false
+   keys=aid,videos,tid,tname,copyright,pic,title,pubdate,ctime,desc,state,duration,mission_id,rights,owner,stat,dynamic,cid,dimension,season_id,short_link_v2,first_frame,pub_location,cover43,tidv2,tnamev2,pid_v2,pid_name_v2,attribute_v3,current_state,global_state,bvid,score,enable_vt
+   BV1atse6EEfx pubdate=1795168800 videos=1 当我用AI续写爱情公寓4关谷悠悠婚礼【AI全民制
+   BV1jKsq6cEEP pubdate=1795230000 videos=1 【IGN独家】《鸣潮：永明的烬焰》实机演示
+   BV1JpyazXEUD pubdate=1795250384 videos=1 侠盗猎车手6 第一集，GTA 6 Part 1

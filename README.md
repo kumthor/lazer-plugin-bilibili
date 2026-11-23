@@ -2,7 +2,7 @@
 
 把 **B 站当作曲库**的 [Lazer](https://github.com/chuxuehaocai/Lazer) Lua 插件：搜索、播放、歌词、收藏夹、排行榜、热门、相关推荐、UP 主投稿、评论、多分 P、扫码 / Cookie 登录。
 
-纯 Lua 实现，无原生依赖，打包体积约 **51 KB**（15 个文件），运行在 Lazer 的隔离 Lua 插件沙箱里。
+纯 Lua 实现，无原生依赖，打包体积约 **57 KB**（15 个文件），运行在 Lazer 的隔离 Lua 插件沙箱里。
 
 ---
 
@@ -13,7 +13,7 @@
 - **音频流**：`playurl` 自动选最高音质，可指定 `original` / `flac`；每路响应都带 `Referer`，裸请求必 403。
 - **歌词**：以视频自带的字幕为主源（与视频同源、时间轴零误差），返回逐行 `lines[]` 交宿主合成；`lrclib` 仅作兜底。
 - **发现**：首页热门、全站排行、相关推荐、UP 主投稿（自动翻页读全）、评论区（最新 / 热门双桶）。
-- **多分 P**：`homeFeed.albums` / `albums` 暴露多 P 视频，`albumSongs` 列出各 P，曲目身份为 `bvid:cid`。
+- **多分 P**：`homeFeed.albums` / `albums` 暴露多 P 视频，`albumSongs` 列出各 P，曲目身份为 `bvid:cid`。首页专辑架只收**音乐区**（`pid_v2 == 1003`），单 P 投稿也是一个「1 首歌的专辑」。
 - **收藏**：本人收藏夹、默认收藏夹喜欢列表、加/取消喜欢、添加到歌单、新建歌单（`csrf=bili_jct`）。
 - **错误归一**：上游错误码统一映射成宿主可读状态，失败只回状态码，不泄露响应正文 / Cookie / 签名 URL。
 
@@ -81,7 +81,7 @@ node tools/build.js        # 产出 dist/community.bilibili.music.zip + SHA-256
 - **`albumSongs` 每页最多 100 个 P**：408 的真实成因是每行重复计算整视频级的量，把这些提到循环外后 100 行可以通过。空 `cid` 的 P 在切片之前就过滤掉，否则页会变短且宿主的下一个 `offset` 与下标错位。
 - **`artistSongs` 每页 100 行**：宿主打开 UP 主页固定调 `artistSongs(limit=100, offset=0)`，插件连发两页 `ps=50`。页长**不能夹到 50**——宿主按「返回行数 >= limit」判 `hasMore`，50/100 会被读成「没有更多投稿」，第 51 条起永远不可达。v0.4.2 在这里 408 的原因是映射阶段的指令成本：`clean_title` 逐字节扫描每行标题，真机 38 字段/行的投稿页映射到第 86–95 行就撞满 250k 预算。v0.4.3 给无 `<` 且无 `&` 的标题加了快路径后，`limit=100` 一次返回 100 行，188 条与 900 条的 UP 主页 `all()` 全程零 408。
 - **评论分两个桶**：`latest` 走时间序、可翻页，`total`/`hasMore` 只描述它；`hot` 只在 `offset=0` 请求一次，失败留空且不缓存，永远不参与分页。
-- **专辑架候选集同源一份**：`homeFeed.albums` 与 `albums()` 都读「热门 + 榜单原始行」，按 bvid 去重（热门优先），共用一个 6 h 缓存。榜单失败时只丢榜单候选，且降级结果不写缓存。
+- **专辑架候选集同源一份且限定音乐区**：`homeFeed.albums` 与 `albums()` 都读「热门 + 音乐区榜单（`rid=3`）原始行」，两层都过 `pid_v2 == 1003` 筛，按 bvid 去重（热门层在前），共用一个 6 h 缓存。单 P 行直接上架、零 `view` 请求；只有多 P 候选才花预算（上限 16 次尝试）。榜单失败时只丢榜单候选，且降级结果不写缓存。
 
 ---
 
@@ -110,7 +110,7 @@ bili/lyrics.lua      字幕三步主源 → lines[]，lrclib 兜底
 
 ## ✅ 测试
 
-离线契约测试共 **137 个 test**：用 `LuaPluginRuntime` 加载真实的 `manifest.json` + `*.lua`，把确定性 JSON fixture 从 `httpHandler` 喂进去，全程不联网。
+离线契约测试共 **140 个 test**：用 `LuaPluginRuntime` 加载真实的 `manifest.json` + `*.lua`，把确定性 JSON fixture 从 `httpHandler` 喂进去，全程不联网。
 
 ```bash
 # 本仓库没有 pubspec.yaml，借 Lazer 源码树的 flutter 环境跑：

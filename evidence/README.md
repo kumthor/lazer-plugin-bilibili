@@ -19,7 +19,20 @@
 
 ## 索引
 
+### T12 — 首页音乐架限定音乐区
+
+| 文件 | 内容 |
+| :--- | :--- |
+| `t12/R1_music_ranking.log` | `rid=3` / `rid=0` 的行数、`videos` 分布与字段表 |
+| `t12/R2_popular_tname.log` | 同一个 `tid` 跨分区出现（`tid=253` 动漫杂谈），故判据用 `pid_v2` |
+| `t12/R5_popular_pid.log` | 热门 20 行的 `pid_v2` 分布：音乐区 0/20，且 `pid_v2=0` 是真实取值 |
+| `t12/R6_music_ranking_score.log` | `score` 存在但恒为 0 |
+| `t12/R7_music_ranking_zones.log` | `rid=3` 的分区分布：86/97 是音乐，11 行属其他区 |
+| `t12/T01_sort_budget.log` | `table.sort` 在 97~100 行上把 `homeFeed` 推过 250k 预算（408） |
+| `t12/G_gates.log` | 静态门 12 项全 0 |
+
 ### T11 — UP 主页 `artistSongs(limit=100)` 的 408
+`artistSongs(limit=100)` 的 408
 
 | 文件 | 内容 |
 | :--- | :--- |

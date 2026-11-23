@@ -43,12 +43,12 @@ return payload;
 
 `pureMusicTtl`（24 h）**只在 `savedAt` 存在时才有机会生效**。2.0.210 写出的空壳没有这个字段，所以在 2.0.300 的读逻辑下它们会被当成过期直接跳过。
 
-但 2.0.210 自己的读逻辑不看 `savedAt` —— 这正是 T2/T3 两轮里空壳一旦落下就必须手工删盘才能恢复的原因（`docs/TASK-T2-lyrics.md:212` 记录 11 个 121 字节行，删完才有歌词）。**在 2.0.210 上，一次空答复 = 永久纯音乐。**
+但 2.0.210 自己的读逻辑不看 `savedAt` —— 这正是 T2/T3 两轮里空壳一旦落下就必须手工删盘才能恢复的原因（记录到 11 个 121 字节行，删完才有歌词）。**在 2.0.210 上，一次空答复 = 永久纯音乐。**
 
 ### 2.3 纯音乐曲目的真机取证
 
 ```
-node evidence/t6/probe_live.mjs（E12 模式）
+实测探针（E12 模式，抓本机真机响应）
 == BV1GJ411x7h7 "【官方 MV】Never Gonna Give You Up - Rick Astley" cid=137649199 dur=213s
   player code=0 subtitle count=0
   lrclib hits=0
@@ -81,7 +81,7 @@ if (!payload.hasTimedLyric && !payload.pureMusic) return;
 | 2.0.210 | 落盘 121 B 空壳，无 `savedAt`，TTL 永不生效 → **永久纯音乐** |
 | 2.0.300 | 不落盘，下次仍询问 → 安全 |
 
-**不一致。** 按 `TASK-T6-closure.md` §3.6 第 3 条：维持 `70`，并在 README 写明"2.0.210 上纯音乐会显示重试"。
+**不一致。** 按「两版行为不一致时不得改成空表」的判定：维持 `70`，并在 README 写明"2.0.210 上纯音乐会显示重试"。
 
 这不是保守，是这台机器上的唯一正确选择：`minAppVersion` 就是 2.0.210，而它的读逻辑没有过期机制。
 

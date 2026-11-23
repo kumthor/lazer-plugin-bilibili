@@ -1,0 +1,23 @@
+# T12/T01：为什么榜单不再按 score 重排（Lua table.sort 的预算代价）
+# 时间: 2026-11-23T13:50:04+08:00
+# 宿主: lz210/Lazer-nextgen (2.1.0+210)，250k 指令预算（lua_plugin_runtime_io.dart:1096）
+# 变体: 只在 album_candidates 里加 table.sort（比较器读 item.score + 原序 tiebreak），其余逐字相同
+
+## 排序到底值不值：先看线上数据（R6/R7 同批采样）
+  rid=3 rows=97  scoreMissing=0  score 取值集合={0}  scoreAscViolations=0
+  rid=0 rows=100 scoreMissing=0  score 取值集合={0}  scoreAscViolations=0
+  → score 字段存在但**恒为 0**，按它排序是语义上的空操作。
+
+## 代价（同一条 homeFeed，只差一个 table.sort）
+  榜单 2 行（T10#01 fixture）：
+    不排序 -> 00:00 +1: All tests passed!
+    排序   -> 00:00 +1: All tests passed!
+    → 小输入上无差别。
+  榜单 100 行全多 P（T10#10 fixture）：
+    不排序 -> 00:07 +140: All tests passed!
+    排序   -> 00:00 +0 -1: T10#10 ... [E] 插件请求失败，请重试或更新插件。 (408)
+    → 97~100 行的 table.sort + 闭包比较器把 homeFeed 推过 250k 预算。
+
+## 结论
+  排序既无收益（score 全 0）又会在真机规模的榜单上触发 408。
+  实现保留榜单自身的返回顺序，不重排。

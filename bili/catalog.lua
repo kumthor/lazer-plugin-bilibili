@@ -736,8 +736,10 @@ end
 -- not declaring it — platform_catalog.dart:117 really calls albums() inside a
 -- Future.wait, so a missing op empties the whole home page.
 --
--- So both land together: homeFeed.albums is the multi-part videos among the
--- popular rows PLUS the ranking chart, and albums() serves the same cached list.
+-- So both land together: homeFeed.albums is the MUSIC-zone rows among the
+-- popular rows PLUS the music-zone chart, and albums() serves the same cached
+-- list. "Music zone" is decided by `pid_v2` (see MUSIC_PID_V2 below); a shelf
+-- that pulled in games and films was the bug this replaces.
 --
 -- T8/D5: the first version sent one `view` request per candidate to learn
 -- whether it had several parts, so opening the home page always cost 8 probes
@@ -745,9 +747,27 @@ end
 -- The popular/ranking rows already carry `videos` (the part count) — measured
 -- 24/24 against `pages` in T7 — so the decision is free. `view` is now sent
 -- only for rows that claim more than one part, and only to fill in the title,
--- cover and exact `songCount` that the feed row does not have.
+-- cover and exact `songCount` that the feed row does not have. A single-part
+-- row is complete without a request, which is what lets the shelf carry single-P
+-- uploads at all.
 local ALBUM_TTL_MS = 6 * 60 * 60 * 1000
 local ALBUM_LIMIT = 16
+-- The shelf is a MUSIC shelf, so a row has to prove it belongs to the music
+-- zone. `pid_v2` is the criterion, not `tid`: the same `tid` appears in two
+-- zones on the wire (evidence/t12/R2_popular_tname.log — tid=253 动漫杂谈 shows
+-- up once as 二次元 and once as 音乐 via tidv2=2023 AI音乐). `pid_v2 = 0` is a
+-- REAL value, not a missing field: 2 of 20 popular rows carry it
+-- (evidence/t12/R5_popular_pid.log), so the test is `== MUSIC_PID_V2` and never
+-- "the field exists".
+local MUSIC_PID_V2 = 1003
+-- The music zone's own chart. `CHART_RID` ("0") stays the all-site chart that
+-- charts() and playlistSongs("chart:0") serve; this one is read only by the
+-- album shelf, so the chart page keeps its row count and its order.
+--
+-- Note that rid=3 is not a music-only feed: 86/97 rows are music and the other
+-- 11 are other zones (evidence/t12/R7_music_ranking_zones.log), which is why
+-- the chart rows go through the same `pid_v2` filter as the popular rows.
+local MUSIC_CHART_RID = "3"
 -- One shelf cache slot, shared by both entry points. T10 changed the normal
 -- source so that `homeFeed` and `albums()` ask for the same candidate set; two
 -- slots would then just pay for the same list twice. A DEGRADED result is
@@ -775,10 +795,14 @@ end
 
 -- Row -> album, using the feed row itself as the source of truth.
 --
--- `videos` is the part count on the wire. When it is missing (older fixtures,
--- a row shape that omits it) the row is treated as single-part: guessing would
--- put a single-part video in the album shelf, and the host has no way to tell
--- an album of one song from a song.
+-- `videos` is the part count on the wire. A row that claims ZERO parts is not a
+-- video at all, so it is rejected; a row that claims ONE part is a real album of
+-- one song and is kept. That is a deliberate change from "multi-part only": the
+-- host enters an album from a shelf row and renders `songCount`, and a
+-- single-part upload whose `songCount` is 1 is telling the truth, not using a
+-- placeholder — `albumSongs` returns exactly one row for it (M.album_songs reads
+-- `view.pages`). The old `videos > 1` gate existed only because the shelf could
+-- not afford a `view` per row; now it does not need one (see `album_rows`).
 --
 -- `detail` is the optional `view` answer, fetched only for multi-part rows so
 -- the album can carry the video's own title/cover instead of the feed's.
@@ -786,7 +810,7 @@ local function album_from(item, detail)
   local bvid = util.text(item.bvid)
   if bvid == "" then return nil end
   local videos = util.number(item.videos, 0)
-  if videos < 2 then return nil end
+  if videos < 1 then return nil end
   local data = type(detail) == "table" and data_of(detail) or nil
   local pages = data ~= nil and util.list(data.pages) or nil
   -- Feed rows and `view` both nest the uploader under `owner`; a search-style
@@ -818,16 +842,35 @@ local function album_from(item, detail)
   }
 end
 
--- Rows that claim more than one part.
+-- Rows that belong on the music shelf.
 --
--- Two sources, deduplicated by bvid, popular first (its title/`videos` are the
--- ones the home page already shows):
+-- Two sources, deduplicated by bvid, in two layers:
 --
---   popular  — the list `featuredSongs` comes from.
---   ranking  — the only source with multi-part rows on the wire: measured live,
---              all 20 popular rows are single-part
---              (evidence/t8/R18_popular_videos.log), so a popular-only shelf is
---              permanently empty.
+--   popular — the list `featuredSongs` comes from, restricted to the music zone
+--             (`pid_v2 == MUSIC_PID_V2`). Its rows keep the popular order.
+--   music   — `/x/web-interface/ranking/v2?rid=3`, RAW rows, whole chart, in the
+--             order the endpoint returned them.
+--
+-- The chart is filtered by `pid_v2` as well, and that is NOT redundant: the
+-- music-zone chart is mostly but not entirely music — measured 86/97 rows carry
+-- pid_v2 == 1003 and the rest are 娱乐/二次元/鬼畜/游戏/知识/科技数码/动物/其他
+-- (evidence/t12/R7_music_ranking_zones.log). An unfiltered chart therefore puts
+-- a 鬼畜 video on the music shelf.
+--
+-- The chart is NOT re-sorted by `score`. `score` is present on 97/97 rows and is
+-- 0 on 97/97 of them (same log), so sorting on it is a no-op semantically — and
+-- it is not free: a Lua `table.sort` with a comparator over 97 rows pushed
+-- `homeFeed` past the 250k instruction budget and answered 408
+-- (evidence/t12/T01_sort_budget.log). The endpoint's own order is the ranking
+-- order, so keeping it is both correct and cheaper.
+--
+-- Shelf order is therefore: popular music rows in popular order, then chart rows
+-- in chart order. That is the only definition the wire supports.
+--
+-- A popular page with ZERO music rows is normal, not an error: measured live,
+-- 0/20 popular rows were in the music zone (evidence/t12/R5_popular_pid.log), so
+-- the shelf falls back to the chart alone and still forms. Nothing here may
+-- pad it with non-music rows to make it look fuller.
 --
 -- T10/D2: folding the chart in used to blow the 250k instruction budget
 -- (`homeFeed THREW 408`). The cause was never the chart's size, it was MAPPING
@@ -843,22 +886,27 @@ end
 local function album_candidates(allow_degrade)
   local out = {}
   local seen = {}
-  local function take(rows)
+  -- `videos` is read from the RAW row on purpose: `song_rows` drops it, and
+  -- mapping the candidates before deciding cost T9/R25 its 408.
+  local function add(item)
+    local bvid = util.text(item.bvid)
+    if bvid == "" or seen[bvid] ~= nil then return end
+    if util.number(item.videos, 0) < 1 then return end
+    seen[bvid] = true
+    out[#out + 1] = item
+  end
+  local function add_music(rows)
     local source = util.list(rows)
     for index = 1, #source do
       local item = source[index]
-      local bvid = util.text(item.bvid)
-      if bvid ~= "" and seen[bvid] == nil and util.number(item.videos, 0) > 1 then
-        seen[bvid] = true
-        out[#out + 1] = item
-      end
+      if util.number(item.pid_v2, 0) == MUSIC_PID_V2 then add(item) end
     end
   end
-  take(popular_rows())
+  add_music(popular_rows())
   local degraded = false
-  local ok, rows = pcall(chart_raw, CHART_RID)
+  local ok, rows = pcall(chart_raw, MUSIC_CHART_RID)
   if ok then
-    take(rows)
+    add_music(rows)
   elseif allow_degrade then
     -- Drop the chart, keep the page. Not cached, so the next call retries.
     degraded = true
@@ -882,18 +930,30 @@ local function album_rows(allow_degrade)
   -- Count ATTEMPTS, not successes: with a success counter one failed `view`
   -- silently pushes the real spend past ALBUM_LIMIT while the budget assertion
   -- still reads 16 (T10/D5).
+  --
+  -- Only a MULTI-PART candidate costs an attempt. A single-part row is complete
+  -- as it stands (title, cover, and `videos = 1` is the exact song count), so it
+  -- must not spend the budget: `view` is not sent for it at all. Charging
+  -- single-part rows against ALBUM_LIMIT would cap a chart of 97 single-part
+  -- rows at 16 albums for no information gained.
   local attempts = 0
   for index = 1, #candidates do
-    if attempts >= ALBUM_LIMIT then break end
-    attempts = attempts + 1
     local item = candidates[index]
-    -- Only multi-part rows reach here, so this request buys real information
-    -- (the video's own title/cover and the exact part count). A failure skips
-    -- the request, not the album: the feed row still says how many parts there
-    -- are, and one dead video must not take the whole shelf down.
-    local ok, body = pcall(http.get, "/x/web-interface/view", { bvid = util.text(item.bvid) })
-    local album = album_from(item, ok and body or nil)
-    if album ~= nil then out[#out + 1] = album end
+    local videos = util.number(item.videos, 0)
+    if videos > 1 then
+      if attempts >= ALBUM_LIMIT then break end
+      attempts = attempts + 1
+      -- This request buys real information (the video's own title/cover and the
+      -- exact part count). A failure skips the request, not the album: the feed
+      -- row still says how many parts there are, and one dead video must not
+      -- take the whole shelf down.
+      local ok, body = pcall(http.get, "/x/web-interface/view", { bvid = util.text(item.bvid) })
+      local album = album_from(item, ok and body or nil)
+      if album ~= nil then out[#out + 1] = album end
+    else
+      local album = album_from(item, nil)
+      if album ~= nil then out[#out + 1] = album end
+    end
   end
   if not degraded then
     album_cache.wide = { rows = out, at = host.now() }
