@@ -1,0 +1,57 @@
+=== 第 1 行完整 JSON ===
+{
+ "id": 117665947454255,
+ "bvid": "BV1orySzYE1F",
+ "cid": 43861804502,
+ "goto": "av",
+ "uri": "https://www.bilibili.com/video/BV1orySzYE1F",
+ "pic": "http://i2.hdslb.com/bfs/archive/75debf5e8ca2b021480cccc64c5ae3deda128927.jpg",
+ "pic_4_3": "http://i0.hdslb.com/bfs/archive/9bd4acdea4f760c8042944ef0cba1ba7df157a9a.jpg",
+ "title": "澳洲刀战房，灰泽满很害怕，还有人分析他们是不是玩GTA6玩疯了【灰泽满Hazel】",
+ "duration": 66,
+ "pubdate": 1795440195,
+ "owner": {
+  "mid": 20094643,
+  "name": "哈哈那日OvO",
+  "face": "https://i1.hdslb.com/bfs/face/dd4ff560a45983272b6854b8ed5236e3feedf626.jpg"
+ },
+ "stat": {
+  "view": 5874,
+  "like": 124,
+  "danmaku": 0,
+  "vt": 0
+ },
+ "av_feature": null,
+ "is_followed": 0,
+ "rcmd_reason": {
+  "reason_type": 0
+ },
+ "show_info": 1,
+ "track_id": "web_pegasus_0.router-web-pegasus-2479516-f6fct.1795481114363.377",
+ "pos": 0,
+ "room_info": null,
+ "ogv_info": null,
+ "business_info": null,
+ "is_stock": 0,
+ "enable_vt": 0,
+ "vt_display": "",
+ "dislike_switch": 1,
+ "dislike_switch_pc": 1
+}
+
+=== 所有行的一级 key 并集 ===
+id, bvid, cid, goto, uri, pic, pic_4_3, title, duration, pubdate, owner, stat, av_feature, is_followed, rcmd_reason, show_info, track_id, pos, room_info, ogv_info, business_info, is_stock, enable_vt, vt_display, dislike_switch, dislike_switch_pc
+
+=== 每行的分区线索 ===
+  BV1orySzYE1F  business_info=null  av_feature=null  rcmd_reason={"reason_type":0}  uri="https://www.bilibili.com/video/BV1orySzYE1F"
+  BV1tVWV65E9h  business_info=null  av_feature=null  rcmd_reason={"reason_type":1}  uri="https://www.bilibili.com/video/BV1tVWV65E9h"
+    business_info={"id":0,"contract_id":"","res_id":0,"asg_id":0,"pos_num":1,"  av_feature=null  rcmd_reason=null  uri=""
+  BV13MxT63EqD  business_info=null  av_feature=null  rcmd_reason={"reason_type":0}  uri="https://www.bilibili.com/video/BV13MxT63EqD"
+  BV1iXyhzVE4s  business_info=null  av_feature=null  rcmd_reason={"reason_type":0}  uri="https://www.bilibili.com/video/BV1iXyhzVE4s"
+  BV1WbyLzyESG  business_info=null  av_feature=null  rcmd_reason={"reason_type":0}  uri="https://www.bilibili.com/video/BV1WbyLzyESG"
+  BV1op4A6ME2A  business_info=null  av_feature=null  rcmd_reason={"reason_type":0}  uri="https://www.bilibili.com/video/BV1op4A6ME2A"
+  BV1bLWS6UEgf  business_info=null  av_feature=null  rcmd_reason={"content":"1万点赞","reason_type":3}  uri="https://www.bilibili.com/video/BV1bLWS6UEgf"
+  BV12BHw66EEb  business_info=null  av_feature=null  rcmd_reason={"reason_type":0}  uri="https://www.bilibili.com/video/BV12BHw66EEb"
+  BV12Zy3zMExr  business_info=null  av_feature=null  rcmd_reason={"reason_type":0}  uri="https://www.bilibili.com/video/BV12Zy3zMExr"
+  BV1ANa16JEdY  business_info=null  av_feature=null  rcmd_reason={"reason_type":0}  uri="https://www.bilibili.com/video/BV1ANa16JEdY"
+  BV1Ltsm6dEin  business_info=null  av_feature=null  rcmd_reason={"reason_type":0}  uri="https://www.bilibili.com/video/BV1Ltsm6dEin"

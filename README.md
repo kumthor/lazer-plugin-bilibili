@@ -2,7 +2,7 @@
 
 把 **B 站当作曲库**的 [Lazer](https://github.com/chuxuehaocai/Lazer) Lua 插件：搜索、播放、歌词、收藏夹、排行榜、热门、相关推荐、UP 主投稿、评论、多分 P、扫码 / Cookie 登录。
 
-纯 Lua 实现，无原生依赖，打包体积约 **66 KB**（15 个文件），运行在 Lazer 的隔离 Lua 插件沙箱里。
+纯 Lua 实现，无原生依赖，打包体积约 **77 KB**（15 个文件），运行在 Lazer 的隔离 Lua 插件沙箱里。
 
 ---
 
@@ -12,7 +12,7 @@
 - **搜索（WBI 签名）**：视频与 UP 主双桶检索，`w_rid` / `wts` 按官方 WBI 规则实时签名。
 - **音频流**：`playurl` 自动选最高音质，可指定 `original` / `flac`；每路响应都带 `Referer`，裸请求必 403。
 - **歌词**：以视频自带的字幕为主源（与视频同源、时间轴零误差），返回逐行 `lines[]` 交宿主合成；`lrclib` 仅作兜底。
-- **发现**：首页热门、全站排行、相关推荐、UP 主投稿（自动翻页读全）、评论区（最新 / 热门双桶）。
+- **发现**：首页热门、全站排行、相关推荐、UP 主投稿（自动翻页读全）、评论区（最新 / 热门双桶）。首页「为你推荐的新发行」自 v0.5.0 起不再读榜单，改读按发布时间排序的搜索源，按 ASMR / 长内容 / 短内容三通道混合出 16 格（见下）。
 - **多分 P**：`homeFeed.albums` / `albums` 暴露多 P 视频，`albumSongs` 列出各 P，曲目身份为 `bvid:cid`。首页专辑架只收**音乐区**（`pid_v2 == 1003`），单 P 投稿也是一个「1 首歌的专辑」。
 - **分 P 入口可见**：专辑名是 `视频标题 · N P`（N ≥ 2 才加后缀），所以正在播放页那一行就能看出这支视频有几 P、该不该点进专辑页。标题按 32 列整串预算裁剪，后缀永远不被宿主的末尾省略号吃掉。
 - **收藏**：本人收藏夹、默认收藏夹喜欢列表、加/取消喜欢、添加到歌单、新建歌单（`csrf=bili_jct`）。
@@ -83,7 +83,10 @@ node tools/build.js        # 产出 dist/community.bilibili.music.zip + SHA-256
 - **`artistSongs` 每页 100 行**：宿主打开 UP 主页固定调 `artistSongs(limit=100, offset=0)`，插件连发两页 `ps=50`。页长**不能夹到 50**——宿主按「返回行数 >= limit」判 `hasMore`，50/100 会被读成「没有更多投稿」，第 51 条起永远不可达。v0.4.2 在这里 408 的原因是映射阶段的指令成本：`clean_title` 逐字节扫描每行标题，真机 38 字段/行的投稿页映射到第 86–95 行就撞满 250k 预算。v0.4.3 给无 `<` 且无 `&` 的标题加了快路径后，`limit=100` 一次返回 100 行，188 条与 900 条的 UP 主页 `all()` 全程零 408。
 - **评论分两个桶**：`latest` 走时间序、可翻页，`total`/`hasMore` 只描述它；`hot` 只在 `offset=0` 请求一次，失败留空且不缓存，永远不参与分页。
 - **专辑名的 N 按行的可得性取，不猜**：列表行（热门 / 榜单 / 相关 / UP 投稿）与 `view` 都带 `videos`，直接用它；`search` 与收藏夹行在真站响应里没有 `videos`（0/20、0/19），这两类行的专辑名**留空**，等播放时由 `song()` 用 `view.pages` 补上——宿主队列的合并规则是「条目 album 非空就不再覆盖」，写纯标题会让播放页永远看不到 P 数。
-- **专辑架候选集同源一份且限定音乐区**：`homeFeed.albums` 与 `albums()` 都读「热门 + 音乐区榜单（`rid=3`）原始行」，两层都过 `pid_v2 == 1003` 筛，按 bvid 去重（热门层在前），共用一个 6 h 缓存。单 P 行直接上架、零 `view` 请求；只有多 P 候选才花预算（上限 16 次尝试）。榜单失败时只丢榜单候选，且降级结果不写缓存。
+- **两个货架自 v0.5.0 起是两套候选集**：
+  - `homeFeed.albums`（首页「为你推荐的新发行」）读**十词新鲜源** `search?search_type=video&order=pubdate`，产 16 格（**8 ASMR + 6 长内容 + 2 短内容**，按固定模式交错），缓存 20 分钟（与宿主 `home:` 对齐）。它**不读榜单**——`ranking/v2?rid=3` 实测 97 行 `pubdate` 中位 603 天、24 小时内 0/97（[probe_base_age.log](evidence/t15/probe_base_age.log)），`popular` 音乐区 0/20，两者都不具备「新」的语义。
+  - `albums()`（浏览页的容器货架）仍读「热门 + 音乐区榜单（`rid=3`）原始行」，两层都过 `pid_v2 == 1003`，按 bvid 去重（热门层在前），6 h 缓存。语义是「找一个多 P 合集打开」，与「推荐现在能听的」不是同一个问题。单 P 行直接上架、零 `view` 请求；只有多 P 候选才花预算（上限 16 次尝试）。榜单失败时只丢榜单候选，且降级结果不写缓存。
+- **新鲜源的三条通道与白名单**：ASMR 靠**标记**而不是分区（四词 120 行里 71 行落在 `21 日常`，那 71 行 100% 带 `asmr`/`助眠`/`白噪音`；对照词「分享课」的 21 行 0 条带标记，[probe_asmr_channels.log](evidence/t16/probe_asmr_channels.log)）；长通道收 `195/228/124/201/207`（`208 校园学习` 自 v0.6.0 起移除，去掉后仍有 31 条去重候选，[probe_long_after_208.log](evidence/t16/probe_long_after_208.log)）；短通道收音乐与鬼畜十区。卡片第二行是「分区 · 时长」，ASMR 槽写**选中它的那个具体词**（`助眠`/`白噪音`/`哄睡`/`环境音`/`ASMR`）——判据是位置：标题里最早出现的词胜出，标题没有词时才由 `tag` 决定（61 行里 36 行标题带词、25 行只有 tag，[label_tokens.log](evidence/t17/label_tokens.log)）。
 
 ---
 
@@ -112,7 +115,7 @@ bili/lyrics.lua      字幕三步主源 → lines[]，lrclib 兜底
 
 ## ✅ 测试
 
-离线契约测试共 **156 个 test**：用 `LuaPluginRuntime` 加载真实的 `manifest.json` + `*.lua`，把确定性 JSON fixture 从 `httpHandler` 喂进去，全程不联网。
+离线契约测试共 **177 个 test**：用 `LuaPluginRuntime` 加载真实的 `manifest.json` + `*.lua`，把确定性 JSON fixture 从 `httpHandler` 喂进去，全程不联网。
 
 ```bash
 # 本仓库没有 pubspec.yaml，借 Lazer 源码树的 flutter 环境跑：
@@ -126,7 +129,8 @@ PLUGIN_ROOT=/path/to/lazer-plugin-bilibili flutter test test/plugin_contract_tes
 - 直接模拟宿主的 `hasMore`、`nextOffset` 与 `all()`；
 - fixture 使用真站字段与真实末端行为（越界页的 `media_count: 0`、短页、缺 `count` 的非空页）；
 - 每个测试独立 VM 与独立存储，消除状态串联；
-- 负向控制：把 `chart_raw` 换回 `chart_rows`、把页长夹回 30，必须让一组断言变红，证明那些结构确实承重。
+- 负向控制：把 `chart_raw` 换回 `chart_rows`、把页长夹回 30、去掉 ASMR 的标记门，必须让一组断言变红，证明那些结构确实承重（T15–T17 共 15 条，读数见 [evidence/t16](evidence/t16/N_negative_controls.log)、[evidence/t17](evidence/t17/N_negative_controls.log)）；
+- 真站重载荷门：`T16#05` 把 300 行真机搜索响应（66 字段/行，[fresh_rows_t16.json](evidence/t16/fresh_rows_t16.json)）原样喂进 `homeFeed`，要求仍出 16 格而不是 408 —— 轻量 fixture 测不出预算墙。
 
 ---
 
@@ -143,6 +147,8 @@ PLUGIN_ROOT=/path/to/lazer-plugin-bilibili flutter test test/plugin_contract_tes
 - 不实现楼中楼、评论点赞与位置式 `removeFromPlaylist`（宿主传列表位置、B 站要 `aid`，映射错了会删错歌）。
 - **多 P 视频的列表行 `duration` 是整个合集的总时长**：100 P 的合集行内写 `25142 s`（6:59:02），而 P1 只有 `228 s`，进度条按合集长度走、P1 播完就换歌。修它要逐行 `view`，`search` 的可支配预算已是零。
 - **搜索 / 收藏夹行的专辑列在宽屏下留空**：这两类行拿不到 P 数，写纯标题又会让播放页丢掉后缀，所以留空交给播放时补。宽屏（≥940px）列表里那一列因此变空白——原本它与标题列逐字重复。
+- **首页「为你推荐的新发行」的供给取决于发布窗口**：它读 `order=pubdate`，所以内容随真实发布时间滚动，几分钟内会换一批；单通道候选不足时按 `asmr → long → short` 补位，十词全失败才退回热门候选集。三个通道的 `play` 范围在同一时刻互不相交（ASMR 行几分钟前发布、play 是两位数），所以这是槽位比例而不是热度倍率。
+- **`search` 源的白名单是硬过滤**：`order=pubdate` 下关键词与主题相关性很弱（「有声书」前排会出现 T1 电竞、两性科普），所以关键词只负责「找新」，分区由 `typeid` 白名单决定。代价是某个词的新内容若全落在白名单外，这个词就白跑一次请求。
 
 ---
 

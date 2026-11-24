@@ -1,0 +1,59 @@
+# long  有声书    rows=30 bytes= 50366  305ms code=0
+# long  文学朗读   rows=30 bytes= 49924  306ms code=0
+# long  听书     rows=30 bytes= 50279  267ms code=0
+# long  讲座     rows=30 bytes= 47664  302ms code=0
+# asmr  ASMR   rows=30 bytes= 45343  269ms code=0
+# asmr  助眠     rows=30 bytes= 43643  294ms code=0
+# asmr  白噪音    rows=30 bytes= 46643  286ms code=0
+# short 鬼畜     rows=30 bytes= 40515  289ms code=0
+# short 歌切     rows=30 bytes= 44395  285ms code=0
+# short 纯音乐    rows=30 bytes= 45264  300ms code=0
+
+=== A. 每词按通道判定后的留存 ===
+  有声书    [long] long=2 asmr=0 short=1  durMed=124209s ≥600s=2/3  ageMed=0.82h ageMax=1.21h  cross=short(130)
+  文学朗读   [long] long=19 asmr=0 short=1  durMed=51315s ≥600s=18/20  ageMed=32.00h ageMax=32.75h  cross=short(31)
+  听书     [long] long=3 asmr=0 short=3  durMed=70029s ≥600s=6/6  ageMed=3.09h ageMax=14.20h  cross=short(130),short(130),short(130)
+  讲座     [long] long=5 asmr=0 short=0  durMed=1581s ≥600s=3/5  ageMed=3.70h ageMax=7.78h
+  ASMR   [asmr] long=0 asmr=23 short=0  durMed=1097s ≥600s=14/23  ageMed=0.46h ageMax=0.85h
+  助眠     [asmr] long=2 asmr=23 short=1  durMed=1892s ≥600s=19/26  ageMed=0.21h ageMax=0.51h  cross=short(130),long(228),long(228)
+  白噪音    [asmr] long=0 asmr=16 short=6  durMed=2479s ≥600s=15/22  ageMed=5.01h ageMax=12.91h  cross=short(216),short(130),short(130),short(130)…x6
+  鬼畜     [short] long=1 asmr=0 short=2  durMed=49s ≥600s=0/3  ageMed=0.80h ageMax=0.80h  cross=long(207)
+  歌切     [short] long=0 asmr=0 short=24  durMed=229s ≥600s=1/24  ageMed=1.78h ageMax=2.18h
+  纯音乐    [short] long=0 asmr=0 short=14  durMed=833s ≥600s=7/14  ageMed=0.31h ageMax=1.00h
+
+=== B. 三通道去重后的可用候选 ===
+  long  n= 31  durMed=9925s  ≥600s=25  ageMax=32.75h
+  asmr  n= 52  durMed=1257s  ≥600s=32  ageMax=12.91h
+  short n= 51  durMed=240s  ≥600s=18  ageMax=12.93h
+  超 24h（只显示分区，不显示时长）: long=2 asmr=0 short=2
+
+=== C. 预算 ===
+  10 词 ps=30 合计 bytes=464036 合计耗时=2903ms（串行，含网络）
+  平均每词 46404 B / 290ms
+  对比 T15 基线：现状 popular(33,182)+ranking(172,845)=206,027 B / 117 行
+  倍数 = 2.25x
+
+=== D. 槽位是否够填（按 6 long + 6 asmr + 4 short 试算）===
+  long  需要 6  可用 31  OK
+  asmr  需要 6  可用 52  OK
+  short 需要 4  可用 51  OK
+
+=== E. 各通道前 5 条（看标题是否真的对得上）===
+  [long]
+    228|人文历史          1m play=  365 | 文物证据开始出现！《苏美尔王表》第二段文言文版朗读
+    195|动态漫.广播剧    1167m play=  326 | 完结文，学长:&quot;洛戈同学，其实我穿女装比你学姐还好看【全职
+    228|人文历史         56m play=  277 | 【睡前听书】《2001：太空漫游》｜朗读：周正平
+    228|人文历史          7m play=  154 | 厌学系列讲座：专一的动机与专一的兴趣对孩子太重要了
+    228|人文历史       2070m play=  120 | 【历史悬疑】《风起洛阳》｜官场权谋｜皇权博弈｜大明风华｜助眠读物｜拯
+  [asmr]
+     21|日常            6m play=  302 | upj别人没有的沙沙镁
+     21|日常           31m play=  409 | 二呆啾 大灰
+     21|日常           32m play=  234 | 【ASMR】心跳声，木块敲击，万花筒催眠，耳边吹气
+     21|日常          199m play=  129 | 【夹心饼干2️⃣2️⃣❗】🍪几乎都是混彩的夹心超级漂亮的tutu造
+     21|日常            2m play=   85 | 沉浸式手账‖有没有一点点的复古感
+  [short]
+    216|鬼畜剧场          1m play= 3325 | ⚡非凡之畜，但是惹错人了⚡
+    130|音乐综合         61m play= 1012 | 【Playlist】纯音乐+下雪声｜“北海道八幡坂雪景”｜含倒计时｜
+    130|音乐综合         44m play=  810 | 【窗外的秋雨直下，暖炉在床边，在旧屋里安睡】白噪音/雨声/氛围/放松
+     31|翻唱          253m play=  273 | 【自译中字/御莉姬】[夜伴朗读]《银河铁道之夜》完整版-配乐添加版本
+    130|音乐综合         32m play=  205 | 𝗣𝗟𝗔𝗬𝗟𝗜𝗦𝗧 | 宿命感拉满的中式美学BGM🪷

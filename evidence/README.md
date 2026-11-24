@@ -22,6 +22,43 @@
 
 ## 索引
 
+### T17 — ASMR 槽写具体词
+
+| 文件 | 内容 |
+| :--- | :--- |
+| `t17/label_tokens.log` | 四种判据在 300 行真站捕获上的分布对比；标题带词 36/61、只有 tag 带词 25/61、标题多词冲突 6/61 |
+| `t17/R1_live_channels.log` | 已安装 v0.6.1 + 真实网络的 homeFeed 16 格逐格读数（助眠×3 / ASMR×2 / 白噪音×3 / 人文历史×5 / 翻唱×2 / 社科×1） |
+| `t17/R2_label_provenance.log` | 真站逐条核对：8 个 ASMR 槽的 bvid 取回 `title`/`tag`，镜像判据算一遍，与货架读数 8/8 一致 |
+| `t17/N_negative_controls.log` | 四条负向控制 |
+| `t17/INDEX.md` | 本轮完整索引（含「N4 第一次是假绿」的成因） |
+| `t17/PACKAGE.log` / `t17/INSTALL.log` | v0.6.1 打包 15/15 逐字节一致、安装 15/15 md5 一致 |
+
+### T16 — 词表换血：ASMR 占一半，`208` 出局
+
+| 文件 | 内容 |
+| :--- | :--- |
+| `t16/probe_asmr_channels.log` | 四词 120 行 → `21` 占 71 行且 71/71 带标记；对照词「分享课」的 21 行 0/4 带标记 |
+| `t16/probe_long_after_208.log` | 去掉 208 后长通道 6 词留存 32 行；`公开课` 只剩 2 行、`课堂实录` 只剩 1 行 |
+| `t16/probe_final_vocab.log` | 十词 `ps=30` 的去重候选 long 31 / asmr 52 / short 51；解码 465,598 B |
+| `t16/fresh_rows_t16.json` | **300 行真站原始回包**（465,598 B，66 字段/行），`T16#05` 的预算门输入 |
+| `t16/R1_live_channels.log` | 已安装 v0.6.0 + 真实网络的 homeFeed 16 格逐格读数（8 ASMR / 6 人文历史 / 1 音乐综合 / 1 翻唱，bvid 零重复） |
+| `t16/N_negative_controls.log` | 六条负向控制（含跑批污染重跑记录） |
+| `t16/INDEX.md` | 本轮完整索引，含「跨通道重复」与「卡片标签相撞」两节的原始读数 |
+| `t16/PACKAGE.log` / `t16/INSTALL.log` | v0.6.0 打包与安装逐项 |
+
+### T15 — 首页「为你推荐的新发行」换源
+
+| 文件 | 内容 |
+| :--- | :--- |
+| `t15/probe_base_age.log` | `popular` 四页 / `ranking rid=3` / `ranking rid=0` 的 `pubdate` 分位；`rid=3` 中位 603 天、`<24h` 0/97 |
+| `t15/probe_search_window.log` | `page_size` 上限（`100` 回 `-400`）、翻页有效性、换词是否得到不同集合 |
+| `t15/probe_heat_metric.log` | 六种热度指标的分位与零值比例；`play+like*10` 与纯 `pubdate` 排序的对照前 16 |
+| `t15/probe_newlist_wbi.log` | `newlist` 三种组合全部 `-412 request was banned`，同批 `popular` 是 200 |
+| `t15/probe_rcmd_fields.log` | 推荐流 26 个字段里没有 `tid`/`tname`/`pid_v2`/`videos` |
+| `t15/probe_typeid_whitelist.log` | 白名单命中分布；`21 日常` 占 64/141 |
+| `t15/T00-duration-anomaly.log` | 120 行里 7 行超 24 h，最长 `14018:40` = 9.7 天 |
+| `t15/fresh_rows_ps20.json` | 六词 `ps=20` 的真站回包（搜索行 66 字段、无 `videos`） |
+
 ### T14 — 搜索页能不能便宜地拿到 P 数
 
 | 文件 | 内容 |

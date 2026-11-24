@@ -113,6 +113,15 @@ enum PastEnd {
 
 /// kind -> page generator. Absent kind falls back to the static fixture.
 final Map<String, _PageFn> _pages = <String, _PageFn>{};
+/// keyword -> generator, `search` only (T15).
+///
+/// The six fresh words MUST be distinguishable. One shared generator makes every
+/// word answer the same bvids, the plugin dedupes them by bvid, and the shelf
+/// collapses to whatever that one page held — which is exactly how the first
+/// version of these tests "passed" with 2 albums.
+final Map<String, _PageFn> _keywordPages = <String, _PageFn>{};
+/// keyword -> upstream gateway code, `search` only (T15#08/#09).
+final Map<String, int> _keywordErrors = <String, int>{};
 /// kind -> total row count reported by the endpoint (null = endpoint omits it).
 final Map<String, int?> _totals = <String, int?>{};
 /// kind -> what an out-of-range page answers with.
@@ -155,6 +164,12 @@ void _paged(String kind, _PageFn fn, {int? total, required PastEnd pastEnd}) {
 
 void _forcedError(String kind, int code) => _forcedErrors[kind] = code;
 
+/// Register a per-keyword `search` generator (T15).
+void _keyworded(String keyword, _PageFn fn) => _keywordPages[keyword] = fn;
+
+/// Make one keyword answer with an upstream gateway code (T15#08/#09).
+void _keywordError(String keyword, int code) => _keywordErrors[keyword] = code;
+
 void _redirect(String kind, int hops) => _redirects[kind] = hops;
 
 void _slowPath(String kind, int ms) => _slowPaths[kind] = ms;
@@ -173,6 +188,8 @@ void _resetFixtureLayer() {
   _httpStatus.clear();
   _malformed.clear();
   _pages.clear();
+  _keywordPages.clear();
+  _keywordErrors.clear();
   _totals.clear();
   _pastEnds.clear();
   _countOverrides.clear();
@@ -665,6 +682,27 @@ Future<Map<String, dynamic>> _handler(Map<String, dynamic> spec) async {
         'body': _envelope(kind, pn, ps, generator(pn, ps)),
       };
     }
+    // T15: the fresh shelf asks `search` once per word, so a single shared
+    // generator is not enough — every word would answer the same bvids.
+    if (kind == 'search') {
+      final keyword = uri.queryParameters['keyword'] ?? '';
+      final forcedKeyword = _keywordErrors[keyword];
+      if (forcedKeyword != null) {
+        return {
+          'status': 200,
+          'headers': <String, dynamic>{},
+          'body': jsonEncode({'code': forcedKeyword, 'message': 'forced'}),
+        };
+      }
+      final keywordPage = _keywordPages[keyword];
+      if (keywordPage != null) {
+        return {
+          'status': 200,
+          'headers': <String, dynamic>{},
+          'body': _envelope('search', pn, ps, keywordPage(pn, ps)),
+        };
+      }
+    }
   }
 
   final globalForced = _forcedErrors['*'];
@@ -794,7 +832,7 @@ Future<Map<String, dynamic>> _handler(Map<String, dynamic> spec) async {
 final _manifest = PluginManifest.fromJson(const {
   'id': 'community.bilibili.music',
   'name': '哔哩哔哩',
-  'version': '0.4.6',
+  'version': '0.6.1',
   'provider': 'bilibili',
   'apiVersion': 1,
   // 与 src/manifest.json 逐项一致（T6#21 会断言；D12 曾是这里停在 v0.1.0）。
@@ -855,7 +893,51 @@ List<dynamic> _rows(Object? value) => value is List ? value : <dynamic>[];
 /// every list-returning op is read through this instead of a hard `as List`.
 List<dynamic> _list(Object? value) => value is List ? value : <dynamic>[];
 
-/// 热门全单 P 的 20 行（真机形状）。
+/// T15：一条搜索行，字段名与真站一致。
+///
+/// 真站 `search` 行有 66 个字段且**没有** `videos` / `pid_v2`（0/20 实测，
+/// evidence/t15/fresh_rows_ps20.json），所以这里也不能有 —— 客户端若靠
+/// `videos` 决定上架，会在真机上把每一行都当成 0 条。
+Map<String, dynamic> _freshRow(
+  String bvid, {
+  required String word,
+  required int typeid,
+  required String typename,
+  required String duration,
+  int play = 0,
+  int like = 0,
+  int pubdate = 1795493309,
+  String? title,
+  /// 真站 299/300 行都带 `tag`（逗号分隔的标签串），ASMR 通道的标记门会读它。
+  /// 默认空串：真站缺失时就是空串，不是 nil。
+  String tag = '',
+}) =>
+    <String, dynamic>{
+      'type': 'video',
+      'id': 117669403629708,
+      'author': 'UP-$bvid',
+      'mid': 3747570478221563,
+      'typeid': typeid,
+      'typename': typename,
+      'arcurl': 'http://www.bilibili.com/video/$bvid',
+      'aid': 117669403629708,
+      'bvid': bvid,
+      'title': title ?? '$word 的第 $bvid 条结果',
+      'description': '',
+      'pic': '//i0.hdslb.com/bfs/archive/$bvid.jpg',
+      'play': play,
+      'favorites': 0,
+      'review': 0,
+      'pubdate': pubdate,
+      'senddate': pubdate,
+      'duration': duration,
+      'tag': tag,
+      'like': like,
+      'upic': '//i0.hdslb.com/bfs/face/$bvid.jpg',
+      'danmaku': 0,
+      'subtitle': '',
+    };
+
 ///
 /// `pid_v2` 必须写：真机 popular 20/20 行都带它（evidence/t12/R5_popular_pid.log），
 /// 而音乐架只收 `pid_v2 == 1003` 的行。缺字段会被当成 0（非音乐区），
@@ -895,6 +977,80 @@ List<Map<String, dynamic>> _multiPartRank(int count, {int videos = 3, int pidV2 
         'pid_v2': pidV2,
       };
     });
+
+/// T16：十词三通道。`asmr` 词给 `tid 21`（日常）**并且**标题里带通道标记 ——
+/// 这是实现了的判据：ASMR 是唯一不能只看 `typeid` 的通道，因为它的行 71/120
+/// 落在 21，而 21 同时也是最大的干扰源（evidence/t16/probe_asmr_channels.log）。
+/// 标题由 `word` 拼出来，所以 ASMR / 助眠 / 白噪音 三个词的标题天然带标记；
+/// 长/短词不带，21 里的长/短行因此会被正确拒掉（T16#06 就是这条反例）。
+///
+/// 热度形状是**故意让 play 与 play+like*10 排序相反**的：`play` 随 n 递减、
+/// `like` 随 n 递增，权重 10 让总分反超。
+///
+///   n=1  -> play=190, like=0   -> play 排序第 1，总分 190   -> 总分排序第 20
+///   n=20 -> play=0,   like=285 -> play 排序第 20，总分 2850 -> 总分排序第 1
+///
+/// 这样 N4（把公式换成单 play）才会真的让 T16#09 变红。
+void seedFreshWords({
+  int perWord = 20,
+  int longTid = 228,
+  int shortTid = 31,
+  int asmrTid = 21,
+}) {
+  const words = <String, String>{
+    'ASMR': 'asmr', '助眠': 'asmr', '白噪音': 'asmr',
+    '有声书': 'long', '文学朗读': 'long', '听书': 'long', '讲座': 'long',
+    '鬼畜': 'short', '歌切': 'short', '纯音乐': 'short',
+  };
+  const zoneName = <String, String>{
+    'asmr': '日常', 'long': '人文历史', 'short': '翻唱',
+  };
+  const prefix = <String, String>{'asmr': 'BVA', 'long': 'BVL', 'short': 'BVS'};
+  for (final entry in words.entries) {
+    final channel = entry.value;
+    final isLong = channel == 'long';
+    final isAsmr = channel == 'asmr';
+    _keyworded(entry.key, (pn, ps) => List.generate(perWord, (i) {
+      final n = i + 1;
+      return _freshRow(
+        '${prefix[channel]}${entry.key.hashCode.abs() % 1000}'
+        '${n.toString().padLeft(3, '0')}',
+        word: entry.key,
+        typeid: isAsmr ? asmrTid : (isLong ? longTid : shortTid),
+        typename: zoneName[channel]!,
+        duration: isAsmr ? '40:00' : (isLong ? '55:00' : '3:00'),
+        // play 降、like 升：单看 play 与看 play+like*10 的顺序正好相反。
+        play: (perWord - n) * 10,
+        like: i * 15,
+        title: '${entry.key} $n',
+      );
+    }));
+  }
+}
+
+/// T16 预算门：把 `evidence/t16/fresh_rows_t16.json` 的**真站行**原样喂进去。
+///
+/// 这不是「形状像真站」，而是 2026-11-24 抓下来的原始字节（300 行 /
+/// 465,598 B，66 字段/行，标题里带 `<em class="keyword">`，`description` 是
+/// 整段简介）。用它跑 homeFeed 才能回答 T9/R25 那个问题：真实规模会不会 408。
+///
+/// 文件缺失时直接失败而不是造行 —— 造出来的短行会让这条门失去意义。
+void seedRealisticFreshWords() {
+  final capture = File('$_srcRoot/evidence/t16/fresh_rows_t16.json');
+  expect(capture.existsSync(), isTrue,
+      reason: '真站捕获缺失，预算门无从谈起：${capture.path}');
+  final parsed = jsonDecode(capture.readAsStringSync()) as Map<String, dynamic>;
+  final pages = parsed['pages'] as Map<String, dynamic>;
+  final pageSize = parsed['pageSize'] as int;
+  final words = (parsed['words'] as List).cast<Map>();
+  expect(words.length, 10, reason: 'T16 是十词');
+  expect(pages.length, words.length, reason: '每词都要有真站页');
+  for (final entry in pages.entries) {
+    final result = (entry.value as List).cast<Map<String, dynamic>>();
+    expect(result.length, pageSize, reason: '${entry.key} 的真站页必须有 $pageSize 行');
+    _keyworded(entry.key, (pn, ps) => result);
+  }
+}
 
 void main() {
   late LuaPluginRuntime rt;
@@ -1977,7 +2133,7 @@ void main() {
 
   // ---- T04: multi-part entry point ----
 
-  test('T6#15 homeFeed.albums carries music-zone rows, single-P included', () async {
+  test('T6#15 the browse shelf carries music-zone rows, single-P included', () async {
     // 20 条热门，全部音乐区；其中第 1、3、7 条是多 P，其余单 P。
     // T8/T03: `videos` 是判定依据（真站每行都带，T7 已验 24/24 与 pages 一致），
     // 所以 fixture 必须像真站一样把它写出来，否则测的是"缺字段时怎么猜"。
@@ -1985,6 +2141,9 @@ void main() {
     // T12 语义变更：单 P 行**也是**专辑候选（一个 1 首歌的专辑，`songCount=1`
     // 是真实值）。旧断言 `albums.length == 3` 保护的是"只收多 P"，
     // 而那正是把音乐架饿死的原因。现在 20 条热门全上架，`view` 仍只发 3 次。
+    //
+    // T15：这条断言钉的是 `albums()`（浏览页的容器货架），不是 `homeFeed`
+    // （首页的新发行推荐）—— 两者自 T15 起是**两套候选集**，见 T15#11。
     _multiPartHot = {'BVhot00001', 'BVhot00003', 'BVhot00007'};
     _paged('popular', (pn, ps) => List.generate(20, (i) {
       final n = i + 1;
@@ -2003,9 +2162,7 @@ void main() {
     // 榜单钉成空，候选只来自热门，才能把「20 条全上架」数清楚。
     _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
     _resetCalls();
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
-    final albums = _list(feed['albums']).cast<Map>();
+    final albums = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0})).cast<Map>();
     // T8/D5: 只有 3 条多 P，就只发 3 次 view —— 单 P 行不探测。
     expect(_callsOf('view'), 3, reason: '只对 videos>1 的行发 view；单 P 行零请求');
     expect(albums.length, 20, reason: '音乐区单 P 与多 P 都上架');
@@ -2022,44 +2179,52 @@ void main() {
     expect(multi['songCount'], 3, reason: '多 P 行由 view 的 pages 补全');
   });
 
-  test('T6#16 homeFeed and albums() share one wide shelf cache', () async {
-    // T10 changed the semantics this test was written for. It used to assert
-    // that the home shelf (popular-only) and the browse shelf (popular + chart)
-    // kept SEPARATE caches — `_callsOf('ranking') == 0` after homeFeed was the
-    // proof that home never read the chart at all.
+  test('T6#16 albums() has one wide cache; homeFeed has its own', () async {
+    // T10 曾让两个入口共用一份 wide 缓存，因为那时它们读同一组候选。
+    // T15 把它们拆开：`albums()` 是「找多 P 容器」（popular + 榜单），
+    // `homeFeed.albums` 是「推荐现在能听的」（六词新鲜源）。两套候选集不该
+    // 共用一个槽，否则后到的那次会读到另一条的货架。
     //
-    // Since T10 both entry points read the same candidate set (popular + RAW
-    // chart rows), so separate caches would only pay for the same list twice.
-    // The red that this rename replaces was expected and is registered in
-    // v0.4.2: the home page now reads the chart ONCE, and the shelf reuses
-    // that result.
+    // 本条钉的是「各自重复调用都免费」，以及「互不写对方的槽」。
+    _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => _multiPartRank(2, videos: 1),
+        pastEnd: PastEnd.notPaged);
+    seedFreshWords();
     _resetCalls();
+    final first = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
+    expect(first, isNotEmpty);
+    final popularAfterFirst = _callsOf('popular');
+    final rankingAfterFirst = _callsOf('ranking');
+    final viewAfterFirst = _callsOf('view');
+    final again = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
+    expect(_callsOf('popular') - popularAfterFirst, 0, reason: 'albums() 第二次命中 wide');
+    expect(_callsOf('ranking') - rankingAfterFirst, 0);
+    expect(_callsOf('view') - viewAfterFirst, 0);
+    expect(again.length, first.length);
+
+    // 首页货架不得写进 albums() 的槽，也不得读它的内容。
+    final searchBefore = _callsOf('search');
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
+    expect(_callsOf('search') - searchBefore, 10, reason: '首页读十词，albums() 一条都不读');
+    expect(_callsOf('ranking') - rankingAfterFirst, 0,
+        reason: '首页不读榜单；albums() 的 wide 已在 TTL 内也不该被它重取');
     final homeAlbums = _list(feed['albums']);
-    expect(_callsOf('ranking'), 1, reason: '首页读一次榜单（原始行，不是映射后的 song）');
-    expect(_callsOf('popular'), 1, reason: '热门只请求一次，两个桶共用');
-    final afterHomeViews = _callsOf('view');
-
-    final popularAfterHome = _callsOf('popular');
-    final rankingAfterHome = _callsOf('ranking');
-    final shelf = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
-    expect(_callsOf('popular') - popularAfterHome, 0, reason: '共用 wide：popular 不得重发');
-    expect(_callsOf('ranking') - rankingAfterHome, 0, reason: '共用 wide：ranking 不得重发');
-    expect(_callsOf('view'), afterHomeViews, reason: '共用 wide：view 不得重发');
+    expect(homeAlbums.map((e) => (e as Map)['id']).toList(),
+        isNot(first.map((e) => (e as Map)['id']).toList()),
+        reason: '两套候选集内容不同 —— 若相同说明其中一个读了另一个的槽');
 
     // Both are repeatable for free.
+    final viewAfterFeed = _callsOf('view');
+    final searchAfterFeed = _callsOf('search');
     final feed2 = await rt.invoke('homeFeed') as Map;
     expect(_list(feed2['albums']).length, homeAlbums.length,
         reason: '第二次 homeFeed 必须命中同一份缓存');
+    expect(_callsOf('search') - searchAfterFeed, 0,
+        reason: '首页货架自己有 20 分钟缓存，十词不得重发');
     final shelf2 = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
-    expect(shelf2.length, shelf.length, reason: '第二次 albums 必须命中同一份缓存');
-    expect(_callsOf('view'), afterHomeViews, reason: '两次复查都不得新增 view');
-
-    // Same source means same content, in the same order.
-    expect(shelf.map((e) => (e as Map)['id']).toList(),
-        homeAlbums.map((e) => (e as Map)['id']).toList(),
-        reason: '同源 + 同缓存 → 两个入口的 id 序列必须一致');
+    expect(shelf2.length, first.length, reason: '第二次 albums 必须命中同一份缓存');
+    expect(_callsOf('view'), viewAfterFeed, reason: '两次复查都不得新增 view');
   });
 
   test('T6#17 albumSongs gives every part its own cid, title and duration', () async {
@@ -2744,12 +2909,16 @@ void main() {
 
   // ---- T8/T03: homeFeed album discovery costs nothing to classify ----
 
-  test('T8#16 homeFeed spends view requests only on multi-part rows', () async {
+  test('T8#16 the browse shelf spends view requests only on multi-part rows', () async {
     // 20 条热门里 5 条多 P：旧代码固定 8 次 view（且可能一条专辑都没换到），
     // 新代码只发 5 次。R3 实测旧行为是 10 请求里 8 次 view、albums 恒空。
     //
     // T12：单 P 行现在也上架，所以这里断言的是**view 次数**而不是架长。
     // 架长由 T6#15 钉（20 条全上架）；本条的职责是「单 P 行一个请求都不发」。
+    //
+    // T15：首页货架（六词新鲜源）根本不发 view —— 搜索行没有 `videos`，
+    // 也没有「多 P 才要补详情」这回事。view 只属于 `albums()`，所以本条
+    // 断言对象改成 albums()。
     _multiPartHot = {'BVhot00002', 'BVhot00005', 'BVhot00009',
                      'BVhot00013', 'BVhot00017'};
     _paged('popular', (pn, ps) => List.generate(20, (i) {
@@ -2769,31 +2938,28 @@ void main() {
     // 榜单钉空：候选全部来自热门，view 次数才只由热门的 5 条多 P 决定。
     _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
     _resetCalls();
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
+    final albums = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
     expect(_callsOf('view'), 5,
         reason: '每次 view 都必须由一个 videos>1 的行触发');
-    expect(_list(feed['albums']).length, 20,
+    expect(albums.length, 20,
         reason: '音乐区 20 行全上架，其中 15 条单 P 零请求');
     expect(_callsOf('popular'), 1, reason: 'popular 只请求一次，两个桶共用');
     expect(_callsOf('ranking'), 1, reason: '多出来的这一次只属于榜单族');
   });
 
-  test('T8#17 an all-single-part feed costs zero view requests', () async {
+  test('T8#17 an all-single-part browse shelf costs zero view requests', () async {
     // R3 的真机结论就是"8 次 view 换 0 专辑"。全单 P 时新代码必须 0 次。
     // T12：架不再为空 —— 单 P 也是专辑。本条钉的是「零 view」，架长由
-    // T6#15/T10#04 钉。
+    // T6#15/T10#04 钉。T15：断言对象改为 albums()（首页货架不发 view）。
     _multiPartHot = <String>{};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(1, videos: 1),
         pastEnd: PastEnd.notPaged);
     _resetCalls();
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
+    final albums = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
     expect(_callsOf('view'), 0, reason: '两个来源都没有多 P 行，就不该有任何 view 探测');
-    expect(_list(feed['albums']).length, 21,
+    expect(albums.length, 21,
         reason: '热门 20 + 榜单 1，全部单 P 也全部上架');
-    expect(_list(feed['featuredSongs']).length, 20, reason: '首页歌曲不受影响');
   });
 
   test('T8#18 albums() reads the chart rows, not the mapped song rows', () async {
@@ -2837,21 +3003,25 @@ void main() {
         shelf.cast<Map>().where((a) => chartIds.contains('${a['id']}')).toList();
     expect(fromChart.length, 1, reason: '榜单行是多 P，必须出现在专辑架上');
     expect(fromChart.first['songCount'], greaterThan(1));
-    // T10: the tail of this test used to read `ranking == 0` after `homeFeed`
-    // and call it "home does not read the chart". That passed for the WRONG
-    // reason — `albums()` above had already filled the cache, so homeFeed hit
-    // it. The assertion text had stopped describing the code (registered as a
-    // false green in the v0.4.2 notes). What is true now: home reuses the same
-    // `wide` entry, so it costs nothing new and yields the same shelf.
+    // T15：首页货架自 T15 起另有来源（六词新鲜源），它不读榜单、不读热门、
+    // 不发 view。原来这里断言的是"两个入口共用 wide 缓存"，那条语义已经作废
+    // （见 T6#16），所以改成断言**拆开**这件事本身。
+    //
+    // popular 已在上一段被 albums() 读过，20 分钟缓存仍在，所以这里允许
+    // 0 次（命中缓存）或 1 次（未命中）；关键是它不再被首页的货架路径驱动。
+    final popularBefore = _callsOf('popular');
     _resetCalls();
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
-    expect(_callsOf('ranking'), 0, reason: 'wide 已在 TTL 内，不得重新读榜单');
-    expect(_callsOf('popular'), 0, reason: 'wide 已在 TTL 内，不得重新读热门');
-    expect(_callsOf('view'), 0, reason: 'wide 已在 TTL 内，不得重新发 view');
+    expect(_callsOf('ranking'), 0, reason: '首页不再读榜单');
+    expect(_callsOf('popular'), 0,
+        reason: 'popular 已在 TTL 内（上面 albums() 读过），首页不得重取');
+    expect(popularBefore, greaterThan(0), reason: '前置条件：上面确实读过 popular');
+    expect(_callsOf('view'), 0, reason: '首页货架不补 view');
+    expect(_callsOf('search'), 10, reason: '首页读十词');
     expect(_list(feed['albums']).map((e) => (e as Map)['id']).toList(),
-        shelf.map((e) => (e as Map)['id']).toList(),
-        reason: '两个入口共用同一份 wide 缓存，内容必须一致');
+        isNot(shelf.map((e) => (e as Map)['id']).toList()),
+        reason: 'albums() 与 homeFeed 是两套候选集，内容不得相同');
   });
 
   // ---- T9/T00+T01: 页长契约与合集完整可达 ----
@@ -3035,17 +3205,16 @@ void main() {
   // chart_raw，且降级必须窄到「榜单这一条请求」。
 
 
-  test('T10#01 homeFeed.albums takes music-zone popular rows plus the music chart',
+  test('T10#01 albums() takes music-zone popular rows plus the music chart',
       () async {
-    // 热门全单 P 且全音乐区；榜单有 2 个多 P。旧代码只读热门 → 专辑架为空。
+    // 热门全单 P 且全音乐区；榜单有 2 个多 P。
     // T12：单 P 也上架，所以热门那 20 行也进候选，顺序是「popular 层在前」。
+    // T15：这条钉的是 albums()（容器货架），首页货架的断言在 T15 家族。
     _multiPartHot = {'BVrank00001', 'BVrank00002'};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(2), pastEnd: PastEnd.notPaged);
 
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
-    final albums = _list(feed['albums']).cast<Map>();
+    final albums = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0})).cast<Map>();
     expect(albums.map((a) => a['id']).toList(), <String>[
       ...List.generate(20, (i) => 'BVhot${(i + 1).toString().padLeft(5, '0')}'),
       'BVrank00001',
@@ -3055,11 +3224,9 @@ void main() {
       expect(album['songCount'], 3, reason: 'view 必须同意行里的 videos');
     }
     expect(_callsOf('view'), 2, reason: '只有榜单那 2 条多 P 需要 view');
-    expect(_list(feed['featuredSongs']).length, 20,
-        reason: 'featuredSongs 仍只取当前一页热门，不受候选集影响');
   });
 
-  test('T10#01b a non-music popular row never reaches the shelf', () async {
+  test('T10#01b a non-music popular row never reaches the browse shelf', () async {
     // 反例一：热门里有音乐区单 P 行，也有非音乐区行。只有前者能上架。
     // `pid_v2 = 0` 是真机真实取值（国产动画 / 综艺），不是缺字段。
     _multiPartHot = <String>{};
@@ -3069,9 +3236,8 @@ void main() {
           {..._singlePartHot(1).first as Map<String, dynamic>, 'bvid': 'BVzero00001', 'pid_v2': 0},
         ], pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
-    expect(_list(feed['albums']).map((a) => (a as Map)['id']).toList(),
+    expect(_list(await rt.invoke('albums', {'limit': 40, 'offset': 0}))
+            .map((a) => (a as Map)['id']).toList(),
         ['BVmusic0001'],
         reason: 'pid_v2=1008 与 pid_v2=0 都不是音乐区，必须拒掉');
   });
@@ -3085,15 +3251,14 @@ void main() {
           {..._multiPartRank(1).first as Map<String, dynamic>, 'bvid': 'BVmusicM001', 'pid_v2': 1003},
           {..._multiPartRank(1).first as Map<String, dynamic>, 'bvid': 'BVgameM0001', 'pid_v2': 1008},
         ], pastEnd: PastEnd.notPaged);
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
-    expect(_list(feed['albums']).map((a) => (a as Map)['id']).toList(),
+    expect(_list(await rt.invoke('albums', {'limit': 40, 'offset': 0}))
+            .map((a) => (a as Map)['id']).toList(),
         ['BVmusicM001'],
         reason: '音乐区多 P 收，非音乐区多 P 拒 —— 旧代码只按 videos>1 收，两个都会进');
     expect(_callsOf('view'), 1, reason: '被拒的行不该产生 view');
   });
 
-  test('T10#03 a bvid present in both sources yields one album and one view',
+  test('T10#03 a bvid present in both browse sources yields one album and one view',
       () async {
     // 同一个多 P 视频同时出现在热门和榜单：按 bvid 去重，view 只发一次。
     _multiPartHot = {'BVhot00003'};
@@ -3117,9 +3282,7 @@ void main() {
           },
         ], pastEnd: PastEnd.notPaged);
 
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
-    final albums = _list(feed['albums']).cast<Map>();
+    final albums = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0})).cast<Map>();
     expect(albums.map((a) => a['id']).toList(), ['BVhot00001', 'BVhot00003'],
         reason: '去重后两个 bvid，popular 层在前');
     expect(albums.first['songCount'], 1, reason: '单 P 行 songCount 是真实值');
@@ -3127,7 +3290,7 @@ void main() {
     expect(_callsOf('view'), 1, reason: '去重后只发一次 view');
   });
 
-  test('T10#04 two all-single-part sources still form a shelf with zero view',
+  test('T10#04 two all-single-part browse sources still form a shelf with zero view',
       () async {
     // T12 语义变更的核心：旧断言是「两源全单 P → 空架」，那是被 `videos > 1`
     // 饿出来的。单 P 是真实专辑（1 首歌），架必须非空，且零 view。
@@ -3135,17 +3298,14 @@ void main() {
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(2, videos: 1),
         pastEnd: PastEnd.notPaged);
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
-    final albums = _list(feed['albums']).cast<Map>();
+    final albums = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0})).cast<Map>();
     expect(albums.length, 22, reason: '热门 20 + 榜单 2，全部单 P 也全部上架');
     expect(albums.every((a) => a['songCount'] == 1), isTrue,
         reason: '全单 P 时每行 songCount 必须是 1');
     expect(_callsOf('view'), 0, reason: '两个来源都没有多 P 行，零请求');
-    expect(_list(feed['featuredSongs']).length, 20);
   });
 
-  test('T10#04b a popular page with zero music rows still forms a shelf',
+  test('T10#04b a popular page with zero music rows still forms a browse shelf',
       () async {
     // R5 的真机形态：20 行全非音乐区（含 2 行 pid_v2=0）。架子必须由榜单
     // 单独撑起来，不能因为 popular 没有音乐行就变空。
@@ -3156,79 +3316,70 @@ void main() {
         ], pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(3, videos: 1),
         pastEnd: PastEnd.notPaged);
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
-    final albums = _list(feed['albums']).cast<Map>();
+    final albums = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0})).cast<Map>();
     expect(albums.map((a) => a['id']).toList(),
         ['BVrank00001', 'BVrank00002', 'BVrank00003'],
         reason: 'popular 无音乐行 → 候选退化为纯榜单，架子仍成形');
     expect(_callsOf('view'), 0);
   });
 
-  test('T10#05 a ranking failure degrades to popular instead of failing the page',
+  test('T10#05 a chart failure surfaces from albums() instead of an empty page',
       () async {
-    // 热门里有一行音乐区多 P。榜单失败时只用热门候选。
+    // T15 前这条叫「榜单失败时降级到热门」：当时 homeFeed 读榜单，所以必须
+    // 有降级路径。现在榜单只被 albums() 读，而 albums() 是显式浏览操作，
+    // 失败就属于调用方（同一结论由 T10#12 从错误形状侧钉住）。
+    // 本条改为钉「popular 部分照常返回，但榜单失败照样上抛」。
     _multiPartHot = {'BVhot00003'};
     _paged('popular', (pn, ps) => <Map<String, dynamic>>[
           ..._singlePartHot(2),
           {..._singlePartHot(1).first as Map<String, dynamic>, 'bvid': 'BVhot00003', 'videos': 3},
         ], pastEnd: PastEnd.notPaged);
     _forcedError('ranking', -412);
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
-    expect(_list(feed['featuredSongs']), isNotEmpty, reason: '热门是首页主内容，必须照常');
-    final albums = _list(feed['albums']).cast<Map>();
-    expect(albums.map((a) => a['id']).toList(),
-        ['BVhot00001', 'BVhot00002', 'BVhot00003'],
-        reason: '降级后只用热门候选');
-    expect(albums.last['songCount'], 3,
-        reason: 'M6：该 bvid 已在 _multiPartHot，view 才承认它是多 P');
+    final result = await rt.invoke('albums', {'limit': 40, 'offset': 0});
+    expect(result is Map && result.containsKey('error'), isTrue,
+        reason: 'albums() 不吞榜单失败；降级只属于 homeFeed 的六词源');
   });
 
-  test('T10#06 a failed ranking is retried on the next homeFeed', () async {
+  test('T10#06 a failed browse chart is retried on the next albums() call', () async {
     _multiPartHot = {'BVrank00001'};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(1), pastEnd: PastEnd.notPaged);
     _forcedError('ranking', -412);
-    final first = await rt.invoke('homeFeed') as Map;
-    _expectNoError(first);
-    expect(_list(first['albums']).map((e) => (e as Map)['id']).toList(),
-        List.generate(20, (i) => 'BVhot${(i + 1).toString().padLeft(5, '0')}'),
-        reason: '第一次榜单失败 → 只剩热门那 20 条音乐区行');
+    final first = await rt.invoke('albums', {'limit': 40, 'offset': 0});
+    expect(first is Map && first.containsKey('error'), isTrue,
+        reason: 'albums() 不降级，第一次就是错误');
     final before = _callsOf('ranking');
     _forcedErrors.remove('ranking');
-    final second = await rt.invoke('homeFeed') as Map;
-    _expectNoError(second);
-    expect(_callsOf('ranking') - before, 1, reason: '降级结果不得占住缓存，必须重试榜单');
-    expect(_list(second['albums']).map((e) => (e as Map)['id']).toList(), <String>[
+    final second = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
+    expect(_callsOf('ranking') - before, 1, reason: '失败结果不得占住缓存，必须重试榜单');
+    expect(second.map((e) => (e as Map)['id']).toList(), <String>[
       ...List.generate(20, (i) => 'BVhot${(i + 1).toString().padLeft(5, '0')}'),
       'BVrank00001',
     ], reason: '重试成功后榜单行补进第二层');
   });
 
-  test('T10#07 a degraded result never occupies the shared wide cache', () async {
+  test('T10#07 a failed browse chart never occupies the wide cache', () async {
     _multiPartHot = {'BVrank00001'};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(1), pastEnd: PastEnd.notPaged);
     _forcedError('ranking', -412);
-    _expectNoError(await rt.invoke('homeFeed'));
+    await rt.invoke('albums', {'limit': 40, 'offset': 0});
     _forcedErrors.remove('ranking');
     final before = _callsOf('ranking');
     final shelf = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
     expect(_callsOf('ranking') - before, 1,
-        reason: '若降级结果占了 wide，这里会零请求返回热门集');
+        reason: '若失败结果占了 wide，这里会零请求返回热门集');
     expect(shelf.map((e) => (e as Map)['id']).toList(), <String>[
       ...List.generate(20, (i) => 'BVhot${(i + 1).toString().padLeft(5, '0')}'),
       'BVrank00001',
     ], reason: '重试后榜单行必须在架尾出现');
   });
 
-  test('T10#08 albums() after a successful homeFeed costs no new request', () async {
+  test('T10#08 repeated albums() calls cost no new request', () async {
     _multiPartHot = {'BVrank00001'};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(1), pastEnd: PastEnd.notPaged);
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
+    final first = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
     final popularBefore = _callsOf('popular');
     final rankingBefore = _callsOf('ranking');
     final viewBefore = _callsOf('view');
@@ -3237,38 +3388,37 @@ void main() {
     expect(_callsOf('ranking') - rankingBefore, 0);
     expect(_callsOf('view') - viewBefore, 0);
     expect(shelf.map((e) => (e as Map)['id']).toList(),
-        _list(feed['albums']).map((e) => (e as Map)['id']).toList(),
-        reason: '两个入口共用同一份 wide 缓存，内容必须一致');
+        first.map((e) => (e as Map)['id']).toList(),
+        reason: 'albums() 复用自己的 wide 槽');
   });
 
-  test('T10#09 homeFeed after a successful albums() costs no new request', () async {
+  test('T10#09 homeFeed does not reuse the browse shelf cache', () async {
+    // T15 把这层语义反转了：两个入口现在是两套候选集，所以 albums() 之后
+    // 的 homeFeed 必须**自己**读六词，而不是命中 wide。
     _multiPartHot = {'BVrank00001'};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(1), pastEnd: PastEnd.notPaged);
     final shelf = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0}));
     expect(shelf, isNotEmpty);
-    final popularBefore = _callsOf('popular');
-    final rankingBefore = _callsOf('ranking');
-    final viewBefore = _callsOf('view');
+    final searchBefore = _callsOf('search');
     final feed = await rt.invoke('homeFeed') as Map;
     _expectNoError(feed);
-    expect(_callsOf('popular') - popularBefore, 0);
-    expect(_callsOf('ranking') - rankingBefore, 0);
-    expect(_callsOf('view') - viewBefore, 0);
-    expect(_list(feed['albums']).length, shelf.length);
+    expect(_callsOf('search') - searchBefore, 10,
+        reason: '首页自己读十词，不复用 albums() 的结果');
+    expect(_list(feed['albums']).map((e) => (e as Map)['id']).toList(),
+        isNot(shelf.map((e) => (e as Map)['id']).toList()),
+        reason: '两套候选集内容不同');
   });
 
   test('T10#10 a 100-row all-multi-part chart stays inside ALBUM_LIMIT', () async {
     // 最坏输入：榜单 100 行全多 P。硬上限是 16 次 view（尝试数），不是成功数。
     // T12：热门 20 行（单 P）不需要 view，先全部上架；榜单层在第 17 条多 P
-    // 处停手。所以架长 = 20 + 16，view = 16。
+    // 处停手。所以架长 = 20 + 16，view = 16。T15：断言对象是 albums()。
     final rows = _multiPartRank(100);
     _multiPartHot = {for (final row in rows) row['bvid'] as String};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => rows, pastEnd: PastEnd.notPaged);
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
-    final albums = _list(feed['albums']).cast<Map>();
+    final albums = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0})).cast<Map>();
     expect(albums.length, 20 + 16,
         reason: '20 条单 P 热门 + 16 条到顶的多 P 榜单');
     expect(_callsOf('view'), 16,
@@ -3277,14 +3427,12 @@ void main() {
         reason: '榜单层只放进 16 条');
   });
 
-  test('T10#11 one failing view keeps the rest of the shelf', () async {
+  test('T10#11 one failing view keeps the rest of the browse shelf', () async {
     _multiPartHot = {'BVrank00001', 'BVrank00002'};
     _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
     _paged('ranking', (pn, ps) => _multiPartRank(2), pastEnd: PastEnd.notPaged);
     _viewErrorBvids.add('BVrank00001');
-    final feed = await rt.invoke('homeFeed') as Map;
-    _expectNoError(feed);
-    final albums = _list(feed['albums']).cast<Map>();
+    final albums = _list(await rt.invoke('albums', {'limit': 40, 'offset': 0})).cast<Map>();
     expect(albums.map((a) => a['id']).toList(), <String>[
       ...List.generate(20, (i) => 'BVhot${(i + 1).toString().padLeft(5, '0')}'),
       'BVrank00001',
@@ -3304,6 +3452,592 @@ void main() {
         reason: 'albums() 是显式浏览操作，榜单失败必须照旧上抛');
     final error = (result as Map)['error'] as Map;
     expect(error['httpStatus'], 429, reason: '-412 归为限流');
+  });
+
+  // ---- T15: 首页「为你推荐的新发行」换源 ----
+  //
+  // 缺陷：`homeFeed.albums` 曾是「音乐榜」的同义词。实测 rid=3 的 97 行
+  // `pubdate` 中位 603 天、<24h 为 0/97（evidence/t15/probe_base_age.log），
+  // 而 `popular` 音乐区 0/20 —— 所以要修的不是排序，是源。
+  //
+  // 新源 `search?order=pubdate` 的实测性质（evidence/t15/probe_search_window.log）：
+  // 翻页有效（p1∩p2=0/30）、`page_size` 上限 50、行内**没有** `videos`/`pid_v2`。
+
+  test('T16#01 the shelf is 8 asmr + 6 long + 2 short in a fixed pattern',
+      () async {
+    // 用户 2026-11-24 的比例：ASMR 拿一半，长内容次之，短内容最少。
+    // 断言的是**位置**，不只是计数 —— 计数能对上而顺序难看是很容易的事。
+    seedFreshWords();
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.length, 16, reason: '固定 16 格');
+    final ids = [for (final a in albums) '${a['id']}'];
+    final asmr = ids.where((id) => id.startsWith('BVA')).length;
+    final longs = ids.where((id) => id.startsWith('BVL')).length;
+    final shorts = ids.where((id) => id.startsWith('BVS')).length;
+    expect(asmr, 8, reason: 'ASMR 占一半，实际 $asmr / 16');
+    expect(longs, 6, reason: '长内容 6 格，实际 $longs');
+    expect(shorts, 2, reason: '短内容 2 格，实际 $shorts');
+    // 模式 asmr,asmr,long,asmr,long,asmr,long,short ×2
+    const pattern = ['A', 'A', 'L', 'A', 'L', 'A', 'L', 'S'];
+    for (var slot = 0; slot < 16; slot++) {
+      final want = pattern[slot % 8];
+      final got = ids[slot].startsWith('BVA')
+          ? 'A'
+          : ids[slot].startsWith('BVL')
+              ? 'L'
+              : 'S';
+      expect(got, want, reason: '第 ${slot + 1} 格应为 $want，实际 $got（${ids[slot]}）');
+    }
+  });
+
+  test('T16#02 every shelf album id is a bare bvid', () async {
+    // T13#03 锁 `albumId == bvid`：带 `:cid` 会让专辑入口失效。
+    seedFreshWords();
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.every((a) => !'${a['id']}'.contains(':')), isTrue,
+        reason: 'id 必须是纯 bvid，不得带分 P 后缀');
+    expect(albums.every((a) => '${a['id']}'.startsWith('BV')), isTrue);
+  });
+
+  test('T16#03 the second line names the channel, not the wire zone',
+      () async {
+    seedFreshWords();
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    for (final album in albums) {
+      final artists = _list(album['artists']).cast<Map>();
+      expect(artists.length, 1, reason: '卡片第二行只有一个标签');
+      final name = '${artists.first['name']}';
+      expect(name.contains(' · '), isTrue,
+          reason: '标识必须是「分区 · 时长」，实际是 "$name"');
+    }
+    final labels = [
+      for (final a in albums) '${(_list(a['artists']).first as Map)['name']}'
+    ];
+    // ASMR 通道的行写**选中它的那个词**，与线上分区无关。种子 fixture 的
+    // ASMR 行标题是「<词> n」，三个词分别是 ASMR / 助眠 / 白噪音，所以标签
+    // 也必须是这三个之一 —— 既不是 `日常`（线上分区），也不是扁平的 `ASMR`
+    // （那会把 助眠/白噪音 掩盖掉，见 T17#01）。
+    const asmrLabels = {'ASMR', '助眠', '白噪音', '哄睡', '环境音', '睡眠'};
+    final asmrSlots = [0, 1, 3, 5, 8, 9, 11, 13];
+    for (final slot in asmrSlots) {
+      final head = labels[slot].split(' · ').first;
+      expect(asmrLabels.contains(head), isTrue,
+          reason: '第 ${slot + 1} 格是 ASMR 槽，标签必须是具体的 ASMR 词，实际 "${labels[slot]}"');
+      expect(labels[slot], endsWith(' · 40:00'),
+          reason: '第 ${slot + 1} 格的时长照常印出来，实际 "${labels[slot]}"');
+    }
+    final otherSlots = [2, 4, 6, 7, 10, 12, 14, 15];
+    for (final slot in otherSlots) {
+      final head = labels[slot].split(' · ').first;
+      expect(asmrLabels.contains(head), isFalse,
+          reason: '第 ${slot + 1} 格不是 ASMR 槽，实际 "${labels[slot]}"');
+    }
+    expect(labels.any((l) => l.startsWith('日常')), isFalse,
+        reason: '这一架上不该出现「日常 · …」：$labels');
+    // ASMR 槽之间不该全是同一个词 —— 三个词各占一席才说明标签是逐行判的。
+    final asmrHeads = {for (final slot in asmrSlots) labels[slot].split(' · ').first};
+    expect(asmrHeads.length, 3,
+        reason: 'ASMR 槽应当同时出现 ASMR / 助眠 / 白噪音 三种标签，实际 $asmrHeads');
+    // 长通道保留真实分区名，短通道也是。
+    expect(labels.any((l) => l == '人文历史 · 55:00'), isTrue,
+        reason: '长内容仍要显示自己的分区名与时长：$labels');
+    expect(labels.any((l) => l == '翻唱 · 3:00'), isTrue,
+        reason: '秒级时长必须是 m:ss，不是 180s：$labels');
+  });
+
+  test('T16#04 校园学习 (208) never reaches the shelf', () async {
+    // 用户明确要求去掉校园学习。208 出白名单后，任何词返回它都必须被丢掉 ——
+    // 包括长通道的词。这条是 T16 的验收核心之一。
+    for (final word in const [
+      'ASMR', '助眠', '白噪音',
+      '有声书', '文学朗读', '听书', '讲座',
+      '鬼畜', '歌切', '纯音乐',
+    ]) {
+      _keyworded(word, (pn, ps) => List.generate(20, (i) => _freshRow(
+            'BVschool${word.hashCode.abs() % 1000}'
+            '${(i + 1).toString().padLeft(3, '0')}',
+            word: word, typeid: 208, typename: '校园学习',
+            duration: '50:00', play: 1000 - i,
+          )));
+    }
+    _paged('popular', (pn, ps) => _singlePartHot(3), pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.any((a) => '${a['id']}'.startsWith('BVschool')), isFalse,
+        reason: '208 一条都不能上架');
+    expect(albums, isNotEmpty, reason: '全被过滤时退回旧候选集，不能是空架');
+  });
+
+  test('T16#05 the ten-word real capture still answers (budget gate)', () async {
+    // 十词 ps=30 的真站行：300 行 / 465,598 B，加 popular 33,182 B 后
+    // 498,780 B，是 T15 出货版（313,859 B）的 1.59x、换源前（206,027 B）的
+    // 2.42x。解码量涨了这么多仍未 408，唯一原因是过滤发生在**映射之前**
+    // （T9/R25 的墙量的是被映射的行数，而这里只映射 16 行）。
+    //
+    // 这条红了就说明墙回来了：处理办法是减词或退回 ps=20，不是调预算。
+    seedRealisticFreshWords();
+    _paged('popular', (pn, ps) => _singlePartHot(20), pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.length, 16,
+        reason: '真站行也必须产出 16 格 —— 408 会在这里变成 {error}');
+    expect(_list(feed['featuredSongs']).length, 20, reason: 'popular 桶照常');
+    for (final album in albums) {
+      final label = '${(_list(album['artists']).first as Map)['name']}';
+      expect(label.isNotEmpty, isTrue);
+      expect(label.contains(' · ') || RegExp(r'^[\u4e00-\u9fa5A-Za-z]+$').hasMatch(label),
+          isTrue,
+          reason: '要么「分区 · 时长」，要么只有分区（超 24h 时），实际 "$label"');
+    }
+  });
+
+  test('T16#06 a tid-21 row without an ASMR token never reaches the shelf',
+      () async {
+    // 21 日常 是最大的干扰源。ASMR 通道放它进来有两个条件，必须分别证明：
+    //
+    //   (a) 词本身是 ASMR 词 —— 长/短词搜到的 21 行一律不收
+    //   (b) 行的标题或标签自报 asmr/助眠/白噪音 —— ASMR 词搜到的 21 行也要
+    //       有标记才收
+    //
+    // 三个前缀各测一个方向。`BVnaked` 是**唯一能测到 (b) 的那一条**：它来自
+    // ASMR 词（所以 (a) 过）、落在 21（所以 known 过），只有标记能拦住它。
+    // 第一版只写了 BVplain 与 BVtoken，负向控制 N1（去掉标记门）时全绿 ——
+    // 因为 BVplain 是被 (a) 拦的，不是被 (b) 拦的。缺口补在这里。
+    for (final word in const ['有声书', '文学朗读', '听书', '讲座']) {
+      _keyworded(word, (pn, ps) => List.generate(20, (i) => _freshRow(
+            'BVplain${word.hashCode.abs() % 1000}'
+            '${(i + 1).toString().padLeft(3, '0')}',
+            word: word, typeid: 21, typename: '日常', duration: '40:00',
+            title: '${word}vlog ${i + 1}',
+          )));
+    }
+    for (final word in const ['ASMR', '助眠', '白噪音']) {
+      _keyworded(word, (pn, ps) => List.generate(20, (i) => _freshRow(
+            'BVtoken${word.hashCode.abs() % 1000}'
+            '${(i + 1).toString().padLeft(3, '0')}',
+            word: word, typeid: 21, typename: '日常', duration: '40:00',
+          )));
+    }
+    // ASMR 词、tid 21、标题里**故意不含**任何标记词（默认标题会带 keyword，
+    // 所以必须显式覆盖）。
+    _keyworded('ASMR', (pn, ps) => <Map<String, dynamic>>[
+          ...List.generate(10, (i) => _freshRow(
+                'BVnaked${(i + 1).toString().padLeft(3, '0')}',
+                word: 'ASMR', typeid: 21, typename: '日常', duration: '40:00',
+                play: 900 - i, title: '随手拍的置物架 ${i + 1}',
+              )),
+          ...List.generate(20, (i) => _freshRow(
+                'BVtoken${'ASMR'.hashCode.abs() % 1000}'
+                '${(i + 1).toString().padLeft(3, '0')}',
+                word: 'ASMR', typeid: 21, typename: '日常', duration: '40:00',
+              )),
+        ]);
+    for (final word in const ['鬼畜', '歌切', '纯音乐']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.any((a) => '${a['id']}'.startsWith('BVplain')), isFalse,
+        reason: '长词的 21 行：词不是 ASMR 词，一条都不能上架');
+    expect(albums.any((a) => '${a['id']}'.startsWith('BVnaked')), isFalse,
+        reason: 'ASMR 词的 21 行但没有标记 —— 只有标记门能拦住它，'
+            '它出现说明标记门失效了');
+    expect(albums.any((a) => '${a['id']}'.startsWith('BVtoken')), isTrue,
+        reason: 'ASMR 词的 21 行带标记，必须上架');
+  });
+
+  test('T16#07 an ASMR word\'s row in a real zone lands in the ASMR channel',
+      () async {
+    // 实测的跨界样本：助眠 → 228 人文历史 x2、130 音乐综合 x1
+    // （evidence/t16/probe_final_vocab.log）。它们自报助眠，所以是 ASMR 内容，
+    // 不该拿一个 ASMR 词去填长/短格。
+    for (final word in const ['ASMR', '白噪音']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    _keyworded('助眠', (pn, ps) => List.generate(8, (i) => _freshRow(
+          'BVcross${(i + 1).toString().padLeft(3, '0')}',
+          word: '助眠', typeid: 228, typename: '人文历史', duration: '55:00',
+          title: '【助眠】睡前朗读 ${i + 1}',
+        )));
+    for (final word in const ['有声书', '文学朗读', '听书', '讲座']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    for (final word in const ['鬼畜', '歌切', '纯音乐']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.length, 8, reason: '只有 8 条候选，不得重复填充');
+    expect(albums.first['id'], startsWith('BVcross'));
+    // ASMR 通道的行写选它的那个词（这里标题是「【助眠】…」），不是线上分区
+    // 228/人文历史。线上分区在真机上会和长通道的行撞标签（evidence/t16/
+    // R1_live_channels.log 里 音乐综合 同时属于 ASMR 与短通道），卡片又是宿主
+    // 留给插件的唯一通道信号，所以它必须写 ASMR 系的名字而不是分区名。
+    final label = '${(_list(albums.first['artists']).first as Map)['name']}';
+    expect(label, '助眠 · 55:00',
+        reason: 'ASMR 通道的行要写选中它的词，实际 "$label"');
+    expect(label.contains('人文历史'), isFalse,
+        reason: '线上分区不得出现在 ASMR 槽的标签里，实际 "$label"');
+  });
+
+  test('T16#08 a missing ASMR pool degrades to long, not to 鬼畜', () async {
+    // 三通道的降级顺序是 asmr → long → short。ASMR 全死时，8 个 asmr 格必须
+    // 用长内容补，不能拿鬼畜去填 —— 权重顺序是有语义的。
+    for (final word in const ['ASMR', '助眠', '白噪音']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    for (final word in const ['有声书', '文学朗读', '听书', '讲座']) {
+      _keyworded(word, (pn, ps) => List.generate(20, (i) => _freshRow(
+            'BVL${word.hashCode.abs() % 1000}'
+            '${(i + 1).toString().padLeft(3, '0')}',
+            word: word, typeid: 228, typename: '人文历史', duration: '55:00',
+            play: 100 - i,
+          )));
+    }
+    for (final word in const ['鬼畜', '歌切', '纯音乐']) {
+      _keyworded(word, (pn, ps) => List.generate(20, (i) => _freshRow(
+            'BVS${word.hashCode.abs() % 1000}'
+            '${(i + 1).toString().padLeft(3, '0')}',
+            word: word, typeid: 31, typename: '翻唱', duration: '3:00',
+            play: 100 - i,
+          )));
+    }
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.length, 16, reason: '16 格必须填满');
+    final ids = [for (final a in albums) '${a['id']}'];
+    expect(ids.map((id) => id.startsWith('BVS')).where((x) => x).length, 2,
+        reason: '只有 2 个 short 槽，ASMR 死了不得让鬼畜占满');
+    expect(ids.toSet().length, 16, reason: '不得循环补同一条');
+  });
+
+  test('T16#09 inside a channel the highest play+like*10 comes first', () async {
+    // fixture 形状：第 n 条的 play=(20-n)*10、like=(n-1)*15。
+    //   n=1  -> play=190, like=0   -> 总分 190    <- 单看 play 是第 1
+    //   n=20 -> play=0,   like=285 -> 总分 2850   <- 单看 like/总分是第 1
+    // 两个公式的顺序**相反**，所以这条断言能区分它们（N4 就是靠它变红的）。
+    seedFreshWords();
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.first['id'], endsWith('020'),
+        reason: 'ASMR 通道第一条必须是 play+like*10 最高的那条，实际 ${albums.first['id']}');
+    // 长通道第一个位置是第 3 格。
+    expect(albums[2]['id'], endsWith('020'),
+        reason: '长通道第一格同理，实际 ${albums[2]['id']}');
+    expect(albums.any((a) => '${a['id']}'.endsWith('001')), isFalse,
+        reason: 'play 最高但总分最低的行不得上架 —— 它出现说明公式退化成单 play');
+  });
+
+  test('T16#10 one dead word keeps the other nine and does not cache',
+      () async {
+    seedFreshWords();
+    _keywordError('讲座', -412);
+    final first = await rt.invoke('homeFeed') as Map;
+    _expectNoError(first);
+    final albums = _list(first['albums']).cast<Map>();
+    expect(albums.length, 16, reason: '一个词失败，其余九个词仍要填满架子');
+    expect(albums.any((a) => '${a['id']}'.contains('讲座')), isFalse);
+    _keywordErrors.remove('讲座');
+    final searchBefore = _callsOf('search');
+    final second = await rt.invoke('homeFeed') as Map;
+    _expectNoError(second);
+    expect(_callsOf('search') - searchBefore, greaterThan(0),
+        reason: '降级结果不得占住 20 分钟货架缓存，必须重试');
+    expect(_list(second['albums']).length, 16);
+  });
+
+  test('T16#11 all ten words dead falls back to popular, shelf stays non-empty',
+      () async {
+    seedFreshWords();
+    for (final word in const [
+      'ASMR', '助眠', '白噪音',
+      '有声书', '文学朗读', '听书', '讲座',
+      '鬼畜', '歌切', '纯音乐',
+    ]) {
+      _keywordError(word, -412);
+    }
+    _paged('popular', (pn, ps) => _singlePartHot(4), pastEnd: PastEnd.notPaged);
+    _paged('ranking', (pn, ps) => <Map<String, dynamic>>[], pastEnd: PastEnd.notPaged);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums, isNotEmpty, reason: '十词全挂时必须退回旧候选集，不得抛错也不得空架');
+    expect(albums.map((a) => a['id']).toList(),
+        ['BVhot00001', 'BVhot00002', 'BVhot00003', 'BVhot00004']);
+  });
+
+  test('T16#12 a duration past 24h drops the time and keeps the zone', () async {
+    // 7/120 实测行超过 24h，最长 14018:40 = 841120s（9.7 天），全是连载小说/
+    // 直播回放（evidence/t15/T00-duration-anomaly.log）。它们照样上架，只是
+    // 不印时长。
+    //
+    // 注意 B 站 duration 的格式：`MM:SS`，分钟可以超过 60。所以 `233:38` 是
+    // 3.9 HOURS，不是 233 小时 —— 判超限必须按累加后的秒数，不能按冒号前的
+    // 数字猜。
+    //
+    // 其余词都被钉成空页，这样两条 fixture 行必然占据长通道的第 1、2 位
+    // （否则它们会被同通道 20 条 55 分钟行按热度挤出 6 格）。
+    for (final word in const ['ASMR', '助眠', '白噪音', '鬼畜', '歌切', '纯音乐']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    for (final word in const ['文学朗读', '听书', '讲座']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    _keyworded('有声书', (pn, ps) => <Map<String, dynamic>>[
+          _freshRow('BVlong00001', word: '有声书', typeid: 228,
+              typename: '人文历史', duration: '14018:40', play: 500),
+          _freshRow('BVlong00002', word: '有声书', typeid: 195,
+              typename: '动态漫.广播剧', duration: '55:00', play: 400),
+        ]);
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    final giant = albums.firstWhere((a) => a['id'] == 'BVlong00001');
+    final label = '${(_list(giant['artists']).first as Map)['name']}';
+    expect(label, '人文历史',
+        reason: '超 24h 只显示分区名，不显示 233.6h —— 实际 "$label"');
+    final normal = albums.firstWhere((a) => a['id'] == 'BVlong00002');
+    expect('${(_list(normal['artists']).first as Map)['name']}',
+        '动态漫.广播剧 · 55:00',
+        reason: '正常长内容仍要显示时长');
+    expect(233 * 60 + 38, 14018, reason: '233:38 = 3.9 小时，低于 24h 上限');
+    expect(14018 * 60 + 40, 841120, reason: '14018:40 = 9.7 天，超上限');
+  });
+
+  test('T16#13 the home shelf reads ten words once and never the chart',
+      () async {
+    // 这是换源的核心断言：首页货架的请求构成必须变。
+    seedFreshWords();
+    _paged('ranking', (pn, ps) => _multiPartRank(3), pastEnd: PastEnd.notPaged);
+    _resetCalls();
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    expect(_callsOf('search'), 10, reason: '十词各一页');
+    expect(_callsOf('ranking'), 0, reason: '首页不再读榜单 —— 它正是"不新"的来源');
+    expect(_callsOf('view'), 0, reason: '搜索行没有 videos，不需要补详情');
+    expect(_callsOf('popular'), 1, reason: 'popular 仍要读，featuredSongs 来自它');
+    expect(_list(feed['featuredSongs']), isNotEmpty, reason: '首页歌曲不受换源影响');
+  });
+
+  test('T16#14 a second homeFeed is free inside the 20-minute TTL', () async {
+    seedFreshWords();
+    final first = await rt.invoke('homeFeed') as Map;
+    _expectNoError(first);
+    final searchBefore = _callsOf('search');
+    final second = await rt.invoke('homeFeed') as Map;
+    _expectNoError(second);
+    expect(_callsOf('search') - searchBefore, 0,
+        reason: 'TTL 内不得重发十词');
+    expect(_list(second['albums']).length, _list(first['albums']).length);
+  });
+
+  test('T16#15 one bvid never occupies two slots, even across channels',
+      () async {
+    // 平台层：`fresh_channel_of` 可以让同一条行同时够两个通道的条件 ——
+    // ASMR 词搜到的「助眠」朗读稿落在 228，按 want+标记 是 asmr；长词搜到
+    // 的同一 bvid 落在 228，按 typeid 是 long。两个通道各有各的 `seen`，
+    // 于是**同一条视频被上架两次、两个不同标签**。真机上真的出现过：
+    // `ASMR · 39:52` 与 `人文历史 · 39:52` 是同一个 bvid
+    // （截图留在本地，读数与说明见 evidence/t16/INDEX.md 的
+    // 「一次被真机抓到的缺陷」一节）。
+    //
+    // 通道按 asmr → long → short 构建，高权重通道先认领，所以这里期望
+    // 那条跨界稿以 ASMR 出现且只出现一次。
+    _keyworded('助眠', (pn, ps) => <Map<String, dynamic>>[
+          _freshRow('BVboth00001', word: '助眠', typeid: 228,
+              typename: '人文历史', duration: '39:52', play: 500,
+              title: '【助眠】睡前朗读 全一章'),
+        ]);
+    for (final word in const ['ASMR', '白噪音']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    // 长词搜到同一个 bvid。
+    _keyworded('有声书', (pn, ps) => <Map<String, dynamic>>[
+          _freshRow('BVboth00001', word: '有声书', typeid: 228,
+              typename: '人文历史', duration: '39:52', play: 500,
+              title: '【助眠】睡前朗读 全一章'),
+        ]);
+    for (final word in const ['文学朗读', '听书', '讲座', '鬼畜', '歌切', '纯音乐']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    final ids = [for (final a in albums) '${a['id']}'];
+    expect(ids.where((id) => id == 'BVboth00001').length, 1,
+        reason: '同一个 bvid 只能占一格，实际 $ids');
+    final label = '${(_list(albums.first['artists']).first as Map)['name']}';
+    expect(label, '助眠 · 39:52',
+        reason: '先认领的是高权重的 ASMR 通道，且标签写标题里的 ASMR 词，实际 "$label"');
+  });
+
+  test('T16#15b the same bvid under two words of one channel lands once',
+      () async {
+    // 十词之间会重叠（实测 10 词 300 条去重后 long 31 / asmr 52 / short 51）。
+    // 去重是**整架一次**的，不是每通道一次：跨通道的重复也必须合并，见 T16#15。
+    for (final word in const ['ASMR', '助眠', '白噪音']) {
+      _keyworded(word, (pn, ps) => List.generate(20, (i) => _freshRow(
+            'BVsame00001', word: word, typeid: 21, typename: '日常',
+            duration: '30:00', play: 100 - i,
+          )));
+    }
+    for (final word in const [
+      '有声书', '文学朗读', '听书', '讲座', '鬼畜', '歌切', '纯音乐',
+    ]) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final albums = _list(feed['albums']).cast<Map>();
+    expect(albums.length, 1, reason: '同一个 bvid 在三个 ASMR 词里出现，只上架一次');
+    expect(albums.first['id'], 'BVsame00001');
+  });
+
+  test('T16#16 the shelf never spends a view request', () async {
+    // 搜索行没有 `videos`（0/20 实测），所以 songCount 写 1 是真话；
+    // 逐条 view 会让首页多 16 个请求换不到信息（T14 §2.3 已证 +2.85 倍延迟）。
+    seedFreshWords();
+    _resetCalls();
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    expect(_callsOf('view'), 0);
+    expect(_list(feed['albums']).every((a) => (a as Map)['songCount'] == 1), isTrue,
+        reason: '单条投稿的 songCount 就是 1');
+  });
+
+  // ---- T17 (v0.6.1): ASMR 标签写具体词，不写扁平的 `ASMR` ----
+  //
+  // v0.6.0 为了让 ASMR 通道与短通道的 `音乐综合` 区分开，把所有 asmr 通道的行
+  // 一律写成 `ASMR`。区分问题解决了，但把线上本来就有的信息扔了：三个词加上
+  // `tag` 字段已经能分出 助眠 / 白噪音 / 哄睡 / 环境音，卡片写
+  // 「白噪音 · 20:11」比「ASMR · 20:11」有用（用户 2026-11-24 提出）。
+  //
+  // 判据是**位置**不是优先级：标题里最早出现的那个词胜出，标题一个都没有时
+  // 才由 tag 字段决定。实测 61 行里 36 行标题带词、25 行只有 tag
+  // （evidence/t17/label_tokens.log）。
+
+  test('T17#01 the ASMR shelf names the word, not the umbrella', () async {
+    // 三个 ASMR 词各给一条，标签必须各不相同 —— 扁平 `ASMR` 会让三条一样。
+    for (final word in const ['ASMR', '助眠', '白噪音']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[
+            _freshRow('BVA${word.hashCode.abs() % 1000}'.padRight(12, '0'),
+                word: word, typeid: 21, typename: '日常', duration: '20:11',
+                title: '【$word】睡眠环境音', play: 100),
+          ]);
+    }
+    for (final word in const [
+      '有声书', '文学朗读', '听书', '讲座', '鬼畜', '歌切', '纯音乐',
+    ]) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final labels = [
+      for (final a in _list(feed['albums']).cast<Map>())
+        '${(_list(a['artists']).first as Map)['name']}'
+    ];
+    expect(labels.toSet(), {'ASMR · 20:11', '助眠 · 20:11', '白噪音 · 20:11'},
+        reason: '三条 ASMR 行的标签必须是各自的词（顺序由热度与 bvid 决定，'
+            '所以比集合不比顺序），实际 $labels');
+  });
+
+  test('T17#02 the earliest token in the title wins over priority order',
+      () async {
+    // 「助眠」在前、「白噪音」在后：位置判据要选 助眠。按固定优先级（把
+    // 白噪音排在 助眠 前面）会选 白噪音，两种规则在这里给出不同答案。
+    _keyworded('助眠', (pn, ps) => <Map<String, dynamic>>[
+          _freshRow('BVAorder00001', word: '助眠', typeid: 21, typename: '日常',
+              duration: '30:00', title: '助眠向白噪音 雨声一小时', play: 100),
+        ]);
+    for (final word in const ['ASMR', '白噪音']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    for (final word in const [
+      '有声书', '文学朗读', '听书', '讲座', '鬼畜', '歌切', '纯音乐',
+    ]) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final album = _list(feed['albums']).cast<Map>().first;
+    expect('${(_list(album['artists']).first as Map)['name']}', '助眠 · 30:00',
+        reason: '标题里 助眠 在前，标签就该是 助眠');
+  });
+
+  test('T17#03 a filename-style row falls back to its tag, not to ASMR',
+      () async {
+    // 真机上一批行的标题是纯文件名/人名（「心跳声」「好看呆呆芦荟胶」），标题
+    // 里一个词都没有，只有 `tag` 字段写 `助眠`。扁平 `ASMR` 会把它们埋掉。
+    _keyworded('助眠', (pn, ps) => <Map<String, dynamic>>[
+          _freshRow('BVAtag0000001', word: '助眠', typeid: 21, typename: '日常',
+              duration: '5:54', title: '心跳声',
+              tag: '助眠,放松,耳机', play: 100),
+        ]);
+    for (final word in const ['ASMR', '白噪音']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    for (final word in const [
+      '有声书', '文学朗读', '听书', '讲座', '鬼畜', '歌切', '纯音乐',
+    ]) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final album = _list(feed['albums']).cast<Map>().first;
+    expect('${(_list(album['artists']).first as Map)['name']}', '助眠 · 5:54',
+        reason: '标题无词时由 tag 决定，而不是退回扁平 ASMR');
+  });
+
+  test('T17#04 the ASMR label never leaks a wire zone name', () async {
+    // 线上分区是 音乐综合 / 人文历史 时，标签仍必须是 ASMR 系的名字 —— 否则
+    // 会和短/长通道自己的 `音乐综合`、`人文历史` 撞标签，那正是 v0.6.0 要修的
+    // 问题（evidence/t16/R1_live_channels.log）。
+    const cases = <List<Object>>[
+      ['BVAlive00000001', 130, '音乐综合', '白噪音 · 8:52'],
+      ['BVAlive00000002', 228, '人文历史', '助眠 · 12:16'],
+      ['BVAlive00000003', 21, '日常', '哄睡 · 1:00:00'],
+    ];
+    _keyworded('助眠', (pn, ps) => <Map<String, dynamic>>[
+          for (final c in cases)
+            _freshRow(c[0] as String, word: '助眠', typeid: c[1] as int,
+                typename: c[2] as String, duration: '8:52',
+                title: '${c[3]}'.split(' · ').first + ' 素材',
+                play: 100),
+        ]);
+    for (final word in const ['ASMR', '白噪音']) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    for (final word in const [
+      '有声书', '文学朗读', '听书', '讲座', '鬼畜', '歌切', '纯音乐',
+    ]) {
+      _keyworded(word, (pn, ps) => <Map<String, dynamic>>[]);
+    }
+    final feed = await rt.invoke('homeFeed') as Map;
+    _expectNoError(feed);
+    final labels = [
+      for (final a in _list(feed['albums']).cast<Map>())
+        '${(_list(a['artists']).first as Map)['name']}'
+    ];
+    expect(labels, isNotEmpty);
+    for (final label in labels) {
+      for (final zone in const ['音乐综合', '人文历史', '日常']) {
+        expect(label.contains(zone), isFalse,
+            reason: 'ASMR 槽的标签不得出现线上分区「$zone」，实际 "$label"');
+      }
+    }
   });
 
   test('T11#01 artistSongs(limit=100) answers on the REAL two-page response',
@@ -3386,6 +4120,7 @@ void main() {
     // 作者名也走同一条路径，同样要解实体。
     expect(((rows[0] as Map)['artists'] as List).first['name'], 'UP&co');
   });
+
   // ---- T13: 多 P 可见性（albumName 带 `· N P`） ----
   //
   // 缺陷不是"选不到 P2"，是"看不出这里能选 P2"：`models.song` 给所有视频同一个
@@ -3447,7 +4182,7 @@ void main() {
   });
 
   test('T13#03 a search row leaves the album name blank for song() to fill', () async {
-    // T14/S1 改写了这条规则。原来要求 `albumName == title`，理由是"没有 N
+    // S1（T14）改写了这条规则。原来要求 `albumName == title`，理由是"没有 N
     // 就别写后缀"。但宿主的队列合并是
     //   album: entry.album.isEmpty ? updated.album : entry.album
     // （music_platform_state.dart:635）：一旦把纯标题写进队列条目，之后
@@ -3484,7 +4219,7 @@ void main() {
 
   test('T13#04 a favourites row leaves the album name blank too', () async {
     // fav_resources.json 的 `_note`：0/19 既无 videos 也无顶层 cid，与 search
-    // 同族，处理必须一致（T14/S1）。
+    // 同族，处理必须一致。S1。
     await login();
     final songs = _list(await rt.invoke('playlistSongs',
         {'id': '72000000', 'limit': 20, 'offset': 0}));
@@ -3590,7 +4325,7 @@ void main() {
       expect(row['albumName'], isNot('B站视频'),
           reason: '${row['title']} 落回了泛名，正在播放页的入口又会看不出是什么');
     }
-    // 「非空」只对有 `videos` 的行成立（T14/S1）：search / 收藏夹行留空是**有意**
+    // 「非空」只对有 `videos` 的行成立（S1）：search / 收藏夹行留空是**有意**
     // 的，好让播放时 song() 补成带后缀的称呼。这里分组断言，避免把两条相反
     // 的规则写成一个含糊的循环。
     final named = _list(feed['featuredSongs']).cast<Map>();

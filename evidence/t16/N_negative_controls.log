@@ -1,0 +1,47 @@
+# T16 负向控制
+# 宿主: <lazer-src>
+
+基线: All tests passed
+
+N1 去掉「21 必须带 ASMR 标记」这一层（21 整体放行）
+  期望变红: T16#06
+  实际变红: T16#06  exit=1  尝试=1
+  还原 md5: byte-identical
+  -> PASS
+
+N2 208 校园学习 加回长通道白名单
+  期望变红: T16#04
+  实际变红: T16#04  exit=1  尝试=1
+  还原 md5: byte-identical
+  -> PASS
+  (跑批污染：20 个用例未完成，重跑第 2 次)
+
+N3 槽位模式改回 T15 的 12 长 / 4 短（无 asmr）
+  期望变红: T16#01
+  实际变红: T16#01, T16#03  exit=1  尝试=2
+  其他连带: T16#03
+  还原 md5: byte-identical
+  -> PASS
+  (跑批污染：37 个用例未完成，重跑第 2 次)
+
+N4 热度公式退化成单 play
+  期望变红: T16#09
+  实际变红: T16#09  exit=1  尝试=2
+  还原 md5: byte-identical
+  -> PASS
+
+N5 降级顺序改成 asmr → short → long
+  期望变红: T16#08
+  实际变红: T16#08  exit=1  尝试=1
+  还原 md5: byte-identical
+  -> PASS
+
+N6 跨通道去重退回每通道各一份（三个通道各拿一个空 seen）
+  期望变红: T16#15
+  实际变红: T16#15  exit=1  尝试=1
+  还原 md5: byte-identical
+  -> PASS
+
+还原后基线: All tests passed
+
+NEGATIVE CONTROLS: PASS

@@ -1,0 +1,5 @@
+saltLen=32 cookie=543
+newlist 裸                http=412 code=-412 rows=0 {"code":-412,"message":"request was banned","ttl":1}
+newlist 签名               http=412 code=-412 rows=0 {"code":-412,"message":"request was banned","ttl":1}
+newlist 签名+random_ver    http=412 code=-412 rows=0 {"code":-412,"message":"request was banned","ttl":1}
+popular 裸(对照)            http=200 code=0 rows=0 {"code":0,"message":"OK","ttl":1,"data":{"list":[{"aid":1176

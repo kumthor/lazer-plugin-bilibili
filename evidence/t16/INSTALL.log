@@ -1,0 +1,19 @@
+dest=<lazer-data>/lua_plugins/community.bilibili.music
+OK   manifest.json 823B md5=a6ba5931532ba715f87ab446f5c2932e
+OK   main.lua 5570B md5=431dbcd2bb4a23881ec3297cd983d2d9
+OK   README.md 23781B md5=62653a2cb5670f1c6d36c7783bb7e3ff
+OK   bili/auth.lua 6579B md5=aba21386541a597230190976de3622f4
+OK   bili/catalog.lua 73067B md5=b31fed9d51476f3f1ccea93e47b2f06d
+OK   bili/errors.lua 5022B md5=331b1310dd281ba3ce61664684caeba2
+OK   bili/http.lua 9344B md5=28ca97c2bda0a90e238b059a016e9233
+OK   bili/ids.lua 2407B md5=3649f3f8bee65125b746e9f3eaf86ac0
+OK   bili/lyrics.lua 11358B md5=d957e9edf98b8b0440bd7e519752facb
+OK   bili/models.lua 11083B md5=cbe746f382436dff7e41d5f231704543
+OK   bili/pager.lua 13422B md5=3885f8a40e4276d3bb66a7fbe08d20ab
+OK   bili/store.lua 2473B md5=363940dbffdba8cbc7db7b6b0999a962
+OK   bili/stream.lua 7175B md5=d227c656e12f2cc57bc8fcf0cb0eddc7
+OK   bili/util.lua 13251B md5=d47644603daba46927d87110efa99d46
+OK   bili/wbi.lua 5291B md5=12976a04c85242efc0140efa59067102
+.network-enabled=present
+installedVersion=0.6.0
+INSTALL: PASS (15/15 md5 identical)

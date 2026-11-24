@@ -1,0 +1,18 @@
+=== page_size 上限 ===
+  page_size= 30  http=200 code=0 rows=30 ms=392 numPages=34 numResults=1000
+  page_size= 50  http=200 code=0 rows=50 ms=316 numPages=20 numResults=1000
+  page_size=100  http=200 code=-400 rows=0 ms=81 numPages=undefined numResults=undefined
+
+=== page 翻页是否有效（关键词=有声书）===
+  page=1  rows=30  age 0.31h..4.65h  first=BV1czyQzCEYE last=BV18CyXzfERA
+  page=2  rows=30  age 5.12h..9.05h  first=BV1Aiy9zWEjZ last=BV1r7yXz2Ebn
+  page=3  rows=30  age 9.10h..11.73h  first=BV1yVyXzJE1s last=BV1jYyez9Ekd
+  p1∩p2=0/30
+
+=== 换关键词得到的是不同集合吗 ===
+  "有声书"  rows=30  age 0.31h..4.65h  ms=310
+  "听书"  rows=30  age 1.56h..12.31h  ms=287
+  "公开课"  rows=30  age 0.20h..3.00h  ms=280
+  "鬼畜"  rows=30  age 0.01h..1.31h  ms=264
+  "歌切"  rows=30  age 0.17h..5.70h  ms=281
+  5 词合计 150 条，去重后 150 条

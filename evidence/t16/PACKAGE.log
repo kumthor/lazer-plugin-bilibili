@@ -1,0 +1,25 @@
+# bilibili-0.6.0.zip
+version=0.6.0
+entries=15
+OK   manifest.json 823B sha256=e0600891d7e232b0 md5=a6ba5931532ba715f87ab446f5c2932e
+OK   main.lua 5570B sha256=b3657e8aef222556 md5=431dbcd2bb4a23881ec3297cd983d2d9
+OK   README.md 23781B sha256=8be1ad4b8c4b9c9f md5=62653a2cb5670f1c6d36c7783bb7e3ff
+OK   bili/auth.lua 6579B sha256=3ad0cebe7142529d md5=aba21386541a597230190976de3622f4
+OK   bili/catalog.lua 73067B sha256=bfa6dbeab5d6398b md5=b31fed9d51476f3f1ccea93e47b2f06d
+OK   bili/errors.lua 5022B sha256=87c710c5e5cca11f md5=331b1310dd281ba3ce61664684caeba2
+OK   bili/http.lua 9344B sha256=9064fc7a6bd7bcdf md5=28ca97c2bda0a90e238b059a016e9233
+OK   bili/ids.lua 2407B sha256=70c221650ff11dbf md5=3649f3f8bee65125b746e9f3eaf86ac0
+OK   bili/lyrics.lua 11358B sha256=f37d1150bf648cd5 md5=d957e9edf98b8b0440bd7e519752facb
+OK   bili/models.lua 11083B sha256=4c871c22539e79ee md5=cbe746f382436dff7e41d5f231704543
+OK   bili/pager.lua 13422B sha256=2346c2d8a59a8ce7 md5=3885f8a40e4276d3bb66a7fbe08d20ab
+OK   bili/store.lua 2473B sha256=b9fce312f14fa873 md5=363940dbffdba8cbc7db7b6b0999a962
+OK   bili/stream.lua 7175B sha256=235930c6b54a1175 md5=d227c656e12f2cc57bc8fcf0cb0eddc7
+OK   bili/util.lua 13251B sha256=8f6856deeb36b0e9 md5=d47644603daba46927d87110efa99d46
+OK   bili/wbi.lua 5291B sha256=088b51b1080709a6 md5=12976a04c85242efc0140efa59067102
+zipBytes=76731
+zipSha256=d75e379d6740dc582cdece4a5a9681c000b20b79a697b8062df257220b250cd4
+zipMd5=afd07952b768dee52abdce2a743b5d31
+byteIdentical=15/15
+entryNamesMatch=true
+residue=0
+PACKAGE: PASS

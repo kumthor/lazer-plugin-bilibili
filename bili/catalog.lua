@@ -890,6 +890,517 @@ local function album_from(item, detail)
   }
 end
 
+-- ---------------------------------------------------------------------------
+-- Fresh listening material (T15)
+-- ---------------------------------------------------------------------------
+--
+-- The shelf used to be the music chart, and the music chart is not new: measured
+-- 97 rows with a median `pubdate` of 14487 hours (603 DAYS) and 0/97 inside 24 h
+-- (evidence/t15/probe_base_age.log). "为你推荐的新发行" was therefore a synonym
+-- for "the ranking", which the user reported as the defect ("排行榜的变化很小
+-- 而且也不新").
+--
+-- Source: `/x/web-interface/wbi/search/type?search_type=video&order=pubdate`.
+-- It is the only endpoint measured that carries ALL THREE of `pubdate` (so the
+-- row is genuinely new), `typeid` (so the zone is filterable) and
+-- `play`/`like`/`favorites` (so heat is comparable inside the window). The four
+-- alternatives were each rejected on measurement, not on taste:
+--
+--   ranking/v2?rid=3   0/97 inside 24 h, median 603 days (§above)
+--   popular            music zone 0/20 (1/80 across four pages) — cannot carry
+--                      the shelf alone
+--   newlist            hard-banned: `-412 request was banned` with a valid salted
+--                      signature and a real cookie, while popular/ranking/view
+--                      answered 200 in the same second
+--                      (evidence/t15/probe_newlist_wbi.log)
+--   rcmd (recommend)   median 302 h, and its rows carry NO zone field at all
+--                      (26 keys, no tid/tname/pid_v2/videos), so the plugin
+--                      could not filter what it was handed
+--                      (evidence/t15/probe_rcmd_fields.log)
+--
+-- "New" beats "pure heat" on purpose (D2): a row published minutes ago has
+-- `play == 0`, so ranking by heat across the whole window would only ever
+-- surface old-but-popular rows again. The window is built first, and heat only
+-- orders rows INSIDE it.
+-- T16 词表。三通道，用户 2026-11-24 定的比例：ASMR 最高、长内容次之、
+-- 短内容最少；`公开课` 整词删除（它是 208 的主力，23/30 行落在校园学习），
+-- `讲座` 保留但只占长通道的四分之一。
+--
+-- 换词的依据是 t16 的三份实测，不是感觉：
+--
+--   evidence/t16/probe_asmr_channels.log
+--     ASMR/助眠/白噪音/哄睡 四词 120 行 → 71 行落在 tid=21 日常，
+--     而那 71 行 100% 带 asmr/助眠 等标记；对照词「分享课」的 21 行
+--     0 条带标记。所以 21 不能整体放行，「21 + 标记」却是可分离的。
+--   evidence/t16/probe_long_after_208.log
+--     去掉 208 后长通道 6 词只剩 32 行，其中 `文学朗读` 一个词贡献 19 行；
+--     `公开课` 去 208 后只剩 2 行，`课堂实录` 只剩 1 行 —— 两个都换掉。
+--   evidence/t16/probe_final_vocab.log
+--     本词表 10 词 ps=30 的去重候选：long 31 / asmr 52 / short 51，
+--     解码 465,598 B（现状 206,027 B 的 2.26x）。
+local FRESH_WORDS = {
+  { channel = "asmr", word = "ASMR" },
+  { channel = "asmr", word = "助眠" },
+  { channel = "asmr", word = "白噪音" },
+  { channel = "long", word = "有声书" },
+  { channel = "long", word = "文学朗读" },
+  { channel = "long", word = "听书" },
+  { channel = "long", word = "讲座" },
+  { channel = "short", word = "鬼畜" },
+  { channel = "short", word = "歌切" },
+  { channel = "short", word = "纯音乐" },
+}
+
+-- 30 rows per word, one page. `page_size` is capped at 50 by the endpoint
+-- (`page_size=100` answers `-400`, evidence/t15/probe_search_window.log), but
+-- the real constraint is DECODING cost, not the cap: the host runs the whole
+-- `homeFeed` op under a 250k-instruction budget (lua_plugin_runtime_io.dart:1096).
+--
+-- T9/R25 recorded the cliff as "mapping 100 chart rows answers 408". That wall
+-- is measured on MAPPED rows, not decoded ones, and this op maps only the 16
+-- filtered slots — so the task book's projection that ps=30 would 408 was
+-- tested rather than assumed, and it does NOT:
+--
+--   T15 baseline (6 words, ps=20)  search 191,549 B + popular 33,182 = 224,731
+--   T15 shipped  (6 words, ps=30)  search 280,677 B + popular 33,182 = 313,859
+--   T16 now     (10 words, ps=30)  search 465,598 B + popular 33,182 = 498,780
+--
+-- 498,780 B is 2.42x the pre-T15 op and 1.59x what T15 shipped. That is a real
+-- step up, so it is gated rather than assumed: contract case T16#05 feeds the
+-- 300 REAL captured rows (evidence/t16/fresh_rows_t16.json, 66 fields/row,
+-- `<em>` in titles, full descriptions) through `homeFeed` and requires 16 slots
+-- instead of a 408. If that case ever goes red, the fix is fewer words or
+-- ps=20 — not a bigger budget.
+--
+-- The reason the decode can grow while the op still answers is unchanged: the
+-- filter runs on RAW rows, so the budget is spent on the 16 rows that get
+-- MAPPED, not on the 300 that get decoded.
+local FRESH_PAGE_SIZE = 30
+
+-- 20 minutes, matching the host's own `home:` cache (catalog.dart:490). A
+-- shorter TTL here buys nothing: the host would still serve the old feed until
+-- its own cache expired.
+local FRESH_TTL_MS = 20 * 60 * 1000
+
+-- Zone whitelists. Keyword search with `order=pubdate` is a POOR topicalian
+-- match — the top rows for 有声书 included T1 电竞 and 两性科普
+-- (evidence/t15/probe_heat_metric.log) — so the keyword's only job is "find
+-- something new" and the `typeid` does the actual topic decision (D9).
+--
+-- Three channels since T16, because one threshold cannot serve all ends: 鬼畜
+-- has a median duration of 67 s, 助眠 2326 s and 文学朗读 51315 s (t15/t16
+-- probes). Filtering the short channel by ">= 10 min" would delete the whole
+-- 鬼畜 class; filtering the asmr channel by tid alone would delete it entirely
+-- (below).
+--
+-- `21 日常` is still ABSENT from both tables. It was the single largest noise
+-- source: 64 of the 141 long-whitelist hits, appearing in the top rows of
+-- 广播剧 x20, 评书 x21, 助眠 x18, ASMR x19 (evidence/t15/probe_typeid_whitelist.log).
+--
+-- `208 校园学习` was REMOVED in T16 on the user's instruction, and the supply
+-- measurement backs the removal: with 208 in the list it supplied 48 of the 141
+-- long hits, and after removing it the remaining long words still deliver 31
+-- distinct rows (evidence/t16/probe_long_after_208.log). Nothing else needed 208.
+local LONG_TIDS = {
+  ["195"] = true, -- 动态漫.广播剧
+  ["228"] = true, -- 人文历史
+  ["124"] = true, -- 社科·法律·心理
+  ["201"] = true, -- 科学科普
+  ["207"] = true, -- 财经商业
+}
+local SHORT_TIDS = {
+  ["31"] = true,  -- 翻唱
+  ["130"] = true, -- 音乐综合
+  ["59"] = true,  -- 演奏
+  ["29"] = true,  -- 音乐现场
+  ["193"] = true, -- MV
+  ["30"] = true,  -- VOCALOID·UTAU
+  ["26"] = true,  -- 音MAD
+  ["22"] = true,  -- 鬼畜调教
+  ["216"] = true, -- 鬼畜剧场
+  ["126"] = true, -- 人力VOCALOID
+}
+
+-- A duration past 24 h is treated as a data defect, not as a long video. Seven
+-- of 120 rows measured exceeded it, and every one read as a serialised novel or
+-- a live replay registered as a single upload — the longest was 841120 s, or
+-- 9.7 days (evidence/t15/T00-duration-anomaly.log). Those rows still belong on
+-- the shelf; they just do not get to print "233.6h" on a two-line card.
+local DURATION_CEILING = 86400
+
+-- 16 slots in the pattern below: 8 asmr + 6 long + 2 short.
+--
+-- The weighting is the user's 2026-11-24 decision ("提高 ASMR 权重"). It is a
+-- SLOT ratio, not a heat multiplier: ASMR rows are ranked by the same
+-- `play + like*10` as everything else, they simply get half the shelf. A score
+-- multiplier would have been unverifiable — the three channels have disjoint
+-- play ranges at any instant (asmr rows are minutes old with play in the tens,
+-- short rows are hours old with play in the thousands), so any multiplier would
+-- mostly be measuring row age, not preference.
+--
+-- The six long slots are also the "减少公开课/讲座" answer: `公开课` is gone from
+-- the word list entirely and `讲座` is one of four long words, so the long
+-- channel as a whole now gets 6 slots instead of 12.
+--
+-- One shelf cannot be split in three: the host hardcodes the shelf title
+-- (`home_pages.dart:290` in 2.1.0) and `HomeFeed` has no extra slot for a
+-- plugin, so every channel lands in `homeFeed.albums` and the CARD TEXT is the
+-- only place the distinction can be shown (D5/D6).
+local FRESH_SLOTS = 16
+
+-- Slot -> channel. Repeats twice over the 16 slots, so it must be read as
+-- "per 8 slots: 4 asmr, 3 long, 1 short" and the totals follow.
+--
+-- The pattern, not a set of per-channel counters, is the source of truth: a
+-- counter pair (asmr 8 / long 6) can be satisfied by a thousand orders, and the
+-- order is what the user sees. This one opens on two asmr cards, never puts two
+-- shorts adjacent, and never runs more than two longs in a row.
+local FRESH_PATTERN = { "asmr", "asmr", "long", "asmr", "long", "asmr", "long", "short" }
+local FRESH_PATTERN_LEN = #FRESH_PATTERN
+
+-- Fill order when a slot's own channel is exhausted. Weight order, so a dead
+-- ASMR channel fills with long content rather than with 鬼畜.
+local FRESH_CHANNEL_ORDER = { "asmr", "long", "short" }
+
+-- `play + like*10` over the measured window: p10=1 / p50=50 / p90=362 /
+-- p99=2371, with only 30/300 rows at zero. Single `play` has 53/300 zeroes and
+-- `like/play` has 97/300, so both collapse a large share of the window into one
+-- indistinguishable bucket (D11, evidence/t15/probe_heat_metric.log).
+--
+-- The formula is cheap ON PURPOSE: a comparator closure over ~97 rows already
+-- answered 408 (evidence/t12/T01_sort_budget.log), so this is a plain additive
+-- score computed once per row, never a `table.sort` over the whole page.
+local function fresh_heat(item)
+  return util.number(item.play, 0) + util.number(item.like, 0) * 10
+end
+
+-- ASMR is the one channel that cannot be decided by `typeid` alone.
+--
+-- Measured (evidence/t16/probe_asmr_channels.log): the four ASMR-ish words put
+-- 71 of 120 rows in `21 日常`, and those 71 rows carry an asmr/助眠/白噪音 token
+-- in the title or tags 71/71 times. The control matters more than the hit rate:
+-- a non-ASMR word's 21 rows carried the token 0/4 times. So within tid 21 the
+-- token separates the two populations, and outside tid 21 the whitelist already
+-- decides.
+--
+-- The token list is deliberately short and literal. `放松` / `静心` / `冥想`
+-- look tempting but they also describe 五音疗愈 and 学习背景音, which is exactly
+-- the 208-style content the user asked to stop showing.
+local ASMR_TAG = {
+  "asmr", "助眠", "白噪音", "白噪声", "哄睡", "环境音", "睡眠",
+}
+
+local ASMR_ZONE_TID = "21"
+
+local function fresh_is_asmr_row(item)
+  local text = string.lower(util.text(item.title) .. " " .. util.text(item.tag))
+  for index = 1, #ASMR_TAG do
+    if string.find(text, ASMR_TAG[index], 1, true) ~= nil then return true end
+  end
+  return false
+end
+
+-- Display name for the token that ACTUALLY put this row in the ASMR channel.
+--
+-- v0.6.0 printed a flat `ASMR` on every asmr-channel row so the channel could
+-- be told apart from the short channel's 音乐综合 rows. That fixed the
+-- collision but threw away information the wire already carries: the three
+-- words plus the tag field distinguish 助眠 / 白噪音 / 哄睡 / 环境音 / 睡眠,
+-- and a card that says `白噪音 · 20:11` is strictly more use than `ASMR · 20:11`.
+--
+-- The rule is positional, not priority-based: the token that appears EARLIEST
+-- in the title wins, and only when the title carries none of them does the tag
+-- field decide. Filename-style uploads ("心跳声", "好看呆呆芦荟胶") have no
+-- token in the title at all, so their tag decides; measured on the T16 capture,
+-- 36/61 rows carry a token in the title and 25/61 only in the tag
+-- (evidence/t17/label_tokens.log).
+--
+-- This deliberately does NOT fall back to the wire zone. A 日常 zone is
+-- meaningless on a card, and a real zone (人文历史 / 音乐综合) collides with the
+-- long/short channels' own labels — that collision is what v0.6.0 was fixing.
+-- `ASMR` stays as the last resort for a row matched by the umbrella token only.
+local ASMR_LABEL_BY_TAG = {
+  ["asmr"] = "ASMR", ["助眠"] = "助眠", ["白噪音"] = "白噪音",
+  ["白噪声"] = "白噪音", ["哄睡"] = "哄睡", ["环境音"] = "环境音",
+  -- 睡眠 is folded into 助眠 on purpose: it is the same intent to the listener
+  -- and it appeared on 1 of 61 rows, so a `睡眠 · …` label would be a one-off
+  -- that teaches nothing (evidence/t17/label_tokens.log).
+  ["睡眠"] = "助眠",
+}
+
+-- Tag hits are searched AFTER every title hit, so `TAG_BASE` only has to be
+-- larger than any title length, not a real position.
+local ASMR_TAG_BASE = 1000000
+
+local function fresh_asmr_label(item)
+  local title = string.lower(util.clean_title(util.text(item.title)))
+  local tags = string.lower(util.text(item.tag))
+  local best_at = nil
+  local best = nil
+  for index = 1, #ASMR_TAG do
+    local needle = ASMR_TAG[index]
+    local at = string.find(title, needle, 1, true)
+    if at == nil then
+      local in_tag = string.find(tags, needle, 1, true)
+      if in_tag ~= nil then at = ASMR_TAG_BASE + in_tag end
+    end
+    if at ~= nil and (best_at == nil or at < best_at) then
+      best_at = at
+      best = needle
+    end
+  end
+  if best == nil then return "ASMR" end
+  return ASMR_LABEL_BY_TAG[best]
+end
+
+-- Zone of a row, or nil when it belongs on no shelf at all.
+--
+-- `want` is the channel of the WORD that produced the row, and it decides two
+-- things a `typeid` alone cannot:
+--
+--   * Only asmr-configured words may fill the ASMR channel. A 日常 row found by
+--     鬼畜 is a vlog; the same row found by 助眠 is ASMR. Zone alone cannot tell.
+--   * An asmr word's row that names itself ASMR is ASMR even when it was filed
+--     under a real zone — measured crossovers are 助眠→228 人文历史 x2 and
+--     助眠→130 音乐综合 x1 (evidence/t16/probe_final_vocab.log). Filing those
+--     under "long"/"short" would spend an ASMR word to fill a non-ASMR slot.
+--
+-- The token rule never widens the typeid gate: a row still has to sit in 21 or
+-- in one of the whitelists, so an ASMR-titled 网络游戏 upload cannot get on the
+-- shelf by calling itself ASMR.
+local function fresh_channel_of(item, want)
+  local tid = util.text(item.typeid)
+  local known = tid == ASMR_ZONE_TID or LONG_TIDS[tid] or SHORT_TIDS[tid]
+  if want == "asmr" and known and fresh_is_asmr_row(item) then return "asmr" end
+  if LONG_TIDS[tid] then return "long" end
+  if SHORT_TIDS[tid] then return "short" end
+  return nil
+end
+
+-- "分区 · 时长". The card's second line is the only place the plugin can express
+-- anything about the row (`home_pages.dart:1209-1225` renders title then
+-- `album.artist`), and `Album` has no duration field at all
+-- (`models.dart:394-424`), so the zone and the length both go into
+-- `artists[1].name` (D6).
+--
+-- ASMR-channel rows name the token that selected them (助眠 / 白噪音 / 哄睡 / …)
+-- instead of the wire zone, and instead of a flat `ASMR`.
+--
+-- Both alternatives were measured and both are worse:
+--   * the wire zone — the live shelf put a 白噪音 playlist (wire zone 音乐综合)
+--     in slot 1 and two real 音乐综合 rows from the SHORT channel in slots 8 and
+--     16: three identical `音乐综合 · …` labels for two different channels, so
+--     the weight the user asked for was invisible (evidence/t16/R1_live_channels.log)
+--   * a flat `ASMR` — it separates the channels but discards the distinction the
+--     capture already carries, and 24 of 61 rows would print the umbrella term
+--     while naming themselves 助眠 or 白噪音 in the title
+--     (evidence/t17/label_tokens.log)
+--
+-- The card text is the ONLY channel signal the host gives us (D5/D6), so it has
+-- to be both channel-distinguishing AND specific. Long and short rows keep their
+-- real zone name because there the zone IS the useful information.
+local function fresh_label(item, channel)
+  local zone = util.clean_title(util.text(item.typename))
+  if zone == "" then zone = "B站视频" end
+  if channel == "asmr" then zone = fresh_asmr_label(item) end
+  local seconds = 0
+  if type(item.duration) == "number" then seconds = math.floor(item.duration) end
+  local text = util.text(item.duration)
+  local length = string.len(text)
+  local total = 0
+  local start = 1
+  if length > 0 then
+    while true do
+      local colon = string.find(text, ":", start, true)
+      local part
+      if colon == nil then part = string.sub(text, start) else part = string.sub(text, start, colon - 1) end
+      local piece = tonumber(util.trim(part))
+      if piece == nil or piece < 0 then piece = 0 end
+      total = total * 60 + piece
+      if colon == nil then break end
+      start = colon + 1
+    end
+    seconds = total
+  end
+  if seconds <= 0 or seconds > DURATION_CEILING then return zone end
+  if seconds >= 3600 then
+    return zone .. " · " .. string.format("%.1fh", seconds / 3600)
+  end
+  if seconds >= 60 then
+    return zone .. " · " .. tostring(math.floor(seconds / 60)) .. ":" ..
+      string.format("%02d", seconds % 60)
+  end
+  return zone .. " · " .. tostring(seconds) .. "s"
+end
+
+-- Raw search rows, cached per word and BEFORE any mapping.
+--
+-- Same shape as `popular_rows` / `chart_raw` and for the same reason: the
+-- budget is spent on rows that get MAPPED, so the filter has to happen while
+-- the rows are still raw (`videos` survives, `typeid` is still a number).
+local fresh_cache = {}
+
+store.on_reset(function()
+  fresh_cache = {}
+end)
+
+local function fresh_page(word)
+  local cached = fresh_cache[word]
+  if cached ~= nil and host.now() - cached.at < FRESH_TTL_MS then
+    return cached.rows
+  end
+  local body = wbi.get("/x/web-interface/wbi/search/type", {
+    search_type = "video", keyword = word, order = "pubdate",
+    page = 1, page_size = FRESH_PAGE_SIZE,
+  })
+  local rows = util.list(data_of(body).result)
+  fresh_cache[word] = { rows = rows, at = host.now() }
+  return rows
+end
+
+-- One channel's candidates, best-first, already filtered to its whitelist.
+--
+-- The sort runs over the FILTERED channel only (about 25 rows, measured), never
+-- over the whole page: T12 already proved a `table.sort` plus a comparator
+-- closure over 97 rows pushes this op past the 250k budget
+-- (evidence/t12/T01_sort_budget.log). For the same reason it is a hand-written
+-- insertion sort on a precomputed heat array rather than `table.sort` with a
+-- closure: the closure is the expensive part (one cross-VM call per comparison),
+-- and the sizes here are small enough that O(n^2) with no closure is cheaper.
+--
+-- `owner` is the shelf-wide bvid set. It is shared across the three calls on
+-- purpose: `fresh_channel_of` can put the SAME row in two channels — an ASMR
+-- word's row that self-reports 助眠 AND sits in 228 goes to asmr, but a long
+-- word's identical row goes to long — and the two rows were then shelved twice
+-- under two different labels (`ASMR · 39:52` next to `人文历史 · 39:52` for the
+-- same bvid). Per-channel `seen` cannot catch that; the set has to span the
+-- shelf. Channels are built asmr → long → short, so the higher-weight channel
+-- keeps the row.
+local function fresh_channel(channel, allow_degrade, owner)
+  local rows = {}
+  local heat = {}
+  local seen = owner
+  local failed = 0
+  local words = 0
+  local last_error = nil
+  for index = 1, #FRESH_WORDS do
+    local entry = FRESH_WORDS[index]
+    if entry.channel == channel then
+      words = words + 1
+      local ok, page = pcall(fresh_page, entry.word)
+      if ok then
+        local source = util.list(page)
+        for row = 1, #source do
+          local item = source[row]
+          -- Filtering happens HERE, on raw rows, before any mapping: the budget
+          -- is spent per mapped row (T9/R25).
+          if type(item) == "table" and fresh_channel_of(item, entry.channel) == channel then
+            local bvid = util.text(item.bvid)
+            if bvid ~= "" and seen[bvid] == nil then
+              seen[bvid] = true
+              rows[#rows + 1] = item
+              heat[#rows] = fresh_heat(item)
+            end
+          end
+        end
+      else
+        failed = failed + 1
+        last_error = page
+      end
+    end
+  end
+  -- A dead channel is a real failure; a mostly-dead one is not (T15#08). Only
+  -- when EVERY word of the channel failed does this surface, and only to a
+  -- caller that did not ask to degrade.
+  if words > 0 and failed >= words and not allow_degrade then error(last_error, 0) end
+  for at = 2, #rows do
+    local item = rows[at]
+    local score = heat[at]
+    local bvid = util.text(item.bvid)
+    local cursor = at - 1
+    while cursor >= 1 do
+      local other = heat[cursor]
+      local swap = false
+      if other < score then
+        swap = true
+      elseif other == score and util.text(rows[cursor].bvid) > bvid then
+        swap = true
+      end
+      if not swap then break end
+      rows[cursor + 1] = rows[cursor]
+      heat[cursor + 1] = heat[cursor]
+      cursor = cursor - 1
+    end
+    rows[cursor + 1] = item
+    heat[cursor + 1] = score
+  end
+  return rows, failed
+end
+
+local function fresh_albums(allow_degrade)
+  -- One bvid set for all three channels: see the note on `fresh_channel`'s
+  -- `owner` argument. Order matters — asmr is built first, so a row that
+  -- qualifies for asmr is claimed there and cannot reappear as long/short.
+  local claimed = {}
+  local asmr_rows, asmr_failed = fresh_channel("asmr", allow_degrade, claimed)
+  local long_rows, long_failed = fresh_channel("long", allow_degrade, claimed)
+  local short_rows, short_failed = fresh_channel("short", allow_degrade, claimed)
+  local degraded = asmr_failed > 0 or long_failed > 0 or short_failed > 0
+  local pools = { asmr = asmr_rows, long = long_rows, short = short_rows }
+  local cursors = { asmr = 1, long = 1, short = 1 }
+  local out = {}
+  local padded = 0
+  local function push(item, channel)
+    local bvid = util.text(item.bvid)
+    if bvid == "" then return false end
+    out[#out + 1] = {
+      id = bvid,
+      title = util.clean_title(item.title),
+      coverUrl = util.image(util.field(item, "pic", "cover")),
+      -- Search rows carry no `videos` (0/20 on the live answer), so the honest
+      -- count for one upload is 1. `albumSongs` really does return exactly one
+      -- row for it.
+      songCount = 1,
+      artists = { models.artist(util.field(item, "mid", "uid"), fresh_label(item, channel)) },
+    }
+    return true
+  end
+  -- Try one row from `channel`; returns false when that pool is exhausted.
+  --
+  -- `channel` is the pool the row was filtered into, which is also the row's own
+  -- channel — a row lands in exactly one pool because `fresh_channel_of` decides
+  -- on `typeid` first and the pools are keyed by that decision. So passing the
+  -- pool name to `fresh_label` cannot mislabel a row that arrived by fallback.
+  local function take(channel)
+    local pool = pools[channel]
+    local at = cursors[channel]
+    local total = #pools[channel]
+    while at <= total do
+      local ok = push(pool[at], channel)
+      at = at + 1
+      cursors[channel] = at
+      if ok then return true end
+    end
+    cursors[channel] = at
+    return false
+  end
+  for slot = 1, FRESH_SLOTS do
+    local want = FRESH_PATTERN[(slot - 1) % FRESH_PATTERN_LEN + 1]
+    if not take(want) then
+      -- Degradation, recorded rather than hidden: never cycle a row back in, and
+      -- never leave the slot empty while another pool still has rows.
+      for order = 1, #FRESH_CHANNEL_ORDER do
+        local fallback = FRESH_CHANNEL_ORDER[order]
+        if fallback ~= want and take(fallback) then
+          padded = padded + 1
+          break
+        end
+      end
+    end
+  end
+  return out, degraded, padded
+end
+
 -- Rows that belong on the music shelf.
 --
 -- Two sources, deduplicated by bvid, in two layers:
@@ -931,7 +1442,12 @@ end
 -- main content, so its failure must still surface; anything else (a bad row
 -- mapper, a broken view loop) is a programming error and must not be laundered
 -- into "the home page is empty today".
-local function album_candidates(allow_degrade)
+-- `allow_degrade` used to guard the chart request so a chart failure did not
+-- empty the home page. Since T15 the home page does not read the chart at all
+-- (see `fresh_shelf`), and `albums()` is an explicit browse action that must
+-- surface its failures (T10#12), so there is no caller left that wants the
+-- degraded branch. Removed rather than kept as a dead parameter.
+local function album_candidates()
   local out = {}
   local seen = {}
   -- `videos` is read from the RAW row on purpose: `song_rows` drops it, and
@@ -951,29 +1467,18 @@ local function album_candidates(allow_degrade)
     end
   end
   add_music(popular_rows())
-  local degraded = false
-  local ok, rows = pcall(chart_raw, MUSIC_CHART_RID)
-  if ok then
-    add_music(rows)
-  elseif allow_degrade then
-    -- Drop the chart, keep the page. Not cached, so the next call retries.
-    degraded = true
-  else
-    -- `error(err, 0)` keeps the thrown text (`KIND x` / `HTTP n` /
-    -- `Gateway code n`) intact, so main.lua still classifies it correctly.
-    error(rows, 0)
-  end
-  return out, degraded
+  add_music(chart_raw(MUSIC_CHART_RID))
+  return out
 end
 
--- Build the shelf from the candidate set. One cache slot for both entry points;
--- a degraded build is returned but NOT stored.
-local function album_rows(allow_degrade)
+-- Build the shelf from the candidate set. One cache slot; `albums()` is the
+-- only reader since T15.
+local function album_rows()
   local cached = album_cache.wide
   if cached ~= nil and host.now() - cached.at < ALBUM_TTL_MS then
     return cached.rows
   end
-  local candidates, degraded = album_candidates(allow_degrade)
+  local candidates = album_candidates()
   local out = {}
   -- Count ATTEMPTS, not successes: with a success counter one failed `view`
   -- silently pushes the real spend past ALBUM_LIMIT while the budget assertion
@@ -1003,29 +1508,66 @@ local function album_rows(allow_degrade)
       if album ~= nil then out[#out + 1] = album end
     end
   end
-  if not degraded then
-    album_cache.wide = { rows = out, at = host.now() }
-  end
+  album_cache.wide = { rows = out, at = host.now() }
   return out
+end
+
+-- The home shelf's T15 source: 16 fresh listening rows, 12 long + 4 short.
+--
+-- Deliberately SEPARATE from `album_rows` (which still serves `albums()`, the
+-- browse page). The two shelves mean different things: the browse page is "find
+-- a multi-part container to open", and the home shelf is "recommend something
+-- to listen to right now". Folding them together was the T10 defect in reverse —
+-- one candidate set serving two questions. Here the split is intentional.
+--
+-- Degradation is narrow: one dead word keeps the other words' rows and the
+-- result is NOT cached, so the next open retries. Every fresh word dead falls
+-- through to the old `album_rows` candidate set, so the shelf is never empty if
+-- popular still answers (T15#09).
+local fresh_album_cache = nil
+
+store.on_reset(function()
+  fresh_album_cache = nil
+end)
+
+local function fresh_shelf(allow_degrade)
+  local cached = fresh_album_cache
+  if cached ~= nil and host.now() - cached.at < FRESH_TTL_MS then
+    return cached.rows
+  end
+  local ok, rows, degraded = pcall(fresh_albums, allow_degrade)
+  if ok then
+    if #rows > 0 then
+      if not degraded then fresh_album_cache = { rows = rows, at = host.now() } end
+      return rows
+    end
+  elseif not allow_degrade then
+    error(rows, 0)
+  end
+  -- Either every word failed, or every row was filtered out. The old candidate
+  -- set is the fallback: it is worse (603-day-old chart rows) but it is real,
+  -- and an empty shelf with a live home page is the worse outcome.
+  return album_rows()
 end
 
 -- The browse shelf. Same candidate set as the home page (T10/D4), and it does
 -- NOT degrade: this is an explicit "show me the album shelf" call, so a chart
 -- failure belongs to the caller, as it did before T10.
 function M.albums(limit, offset)
-  return pager.slice(album_rows(false), limit, offset)
+  return pager.slice(album_rows(), limit, offset)
 end
 
 -- ---------------------------------------------------------------------------
 -- Discovery
 -- ---------------------------------------------------------------------------
 
--- Home. Shares the shelf source and cache with albums(): both read the popular
--- list plus the RAW chart rows (see album_candidates for why raw, not mapped).
+-- Home. `albums` is the T15 fresh-listening shelf (see fresh_shelf);
+-- `featuredSongs` still comes from the popular list, which is what it always
+-- was.
 function M.home_feed()
   return {
     featuredSongs = song_rows(popular_rows()),
-    albums = album_rows(true),
+    albums = fresh_shelf(true),
   }
 end
 
