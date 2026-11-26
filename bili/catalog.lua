@@ -402,7 +402,7 @@ local function cover_put(id, value)
 end
 
 -- 收藏夹 list-all 不返回封面，用第一个视频的 cover 回填。
--- 单条 ps=1 请求，失败/空夹返回 nil，models.playlist 会退回 folder 自带字段。
+-- 改用免 412 风控的 resource/ids + resource/infos 接口
 local function folder_cover(folder, budget)
   local id = folder_id(folder)
   if id == "" then return nil end
@@ -413,35 +413,49 @@ local function folder_cover(folder, budget)
     return nil
   end
   budget.used = budget.used + 1
-  local ok, body = pcall(http.get, "/x/v3/fav/resource/list", {
-    media_id = id, pn = 1, ps = 1, order = "mtime", type = 0,
-  })
+  local ok, body = pcall(http.get, "/x/v3/fav/resource/ids", { media_id = id })
   if not ok then return nil end
-  local medias = util.list(data_of(body).medias)
-  if #medias == 0 then
+  local items = util.list(data_of(body))
+  if #items == 0 then
     cover_put(id, nil)
     return nil
   end
-  local url = util.image(util.field(medias[1], "cover", "pic"))
+  local first = items[1]
+  local res_key = tostring(first.id) .. ":" .. tostring(first.type or 2)
+  local ok_info, body_info = pcall(http.get, "/x/v3/fav/resource/infos", { resources = res_key })
+  if not ok_info then return nil end
+  local info_list = util.list(data_of(body_info))
+  if #info_list == 0 then
+    cover_put(id, nil)
+    return nil
+  end
+  local url = util.image(util.field(info_list[1], "cover", "pic"))
   cover_put(id, url)
   return url
 end
 
--- list-all ignores ps/pn (measured 2026-11-21: pn=1/2/3 and ps=5 all return the
--- same rows), so the whole list arrives at once and is sliced locally. Sending
--- the host's limit as `ps` produced 50 rows for limit=100 and the host then
--- declared the list finished — folder 51+ never appeared.
 function M.playlists(limit, offset)
   if store.cookie() == "" then return {} end
   local mid = current_mid()
-  local body = http.get("/x/v3/fav/folder/created/list-all", { up_mid = mid })
-  local rows = util.list(data_of(body).list)
+  -- 使用原生带 cover 封面的 /x/v3/fav/folder/created/list 接口，杜绝逐个请求与 COVER_BUDGET 截断
+  local body = http.get("/x/v3/fav/folder/created/list", { up_mid = mid, pn = 1, ps = 100 })
+  local data = data_of(body)
+  local rows = util.list(data.list)
+  local total_count = util.number(data.count, 0)
+  if total_count > #rows and #rows > 0 then
+    local page_count = math.ceil(total_count / 100)
+    for p = 2, page_count do
+      local p_body = http.get("/x/v3/fav/folder/created/list", { up_mid = mid, pn = p, ps = 100 })
+      local p_rows = util.list(data_of(p_body).list)
+      if #p_rows == 0 then break end
+      for index = 1, #p_rows do
+        rows[#rows + 1] = p_rows[index]
+      end
+    end
+  end
   local page = pager.slice(rows, limit, offset)
-  -- Covers are resolved AFTER slicing: only the folders actually returned cost
-  -- a request, and only up to COVER_BUDGET of them.
-  local budget = { used = 0, truncated = false }
   return util.map_rows(page, function(item)
-    return models.playlist(item, folder_is_default(item), folder_cover(item, budget), mid)
+    return models.playlist(item, folder_is_default(item), nil, mid)
   end)
 end
 
@@ -556,6 +570,71 @@ local function is_chart(id)
   return string.sub(id, 1, 6) == "chart:"
 end
 
+local FAV_IDS_TTL_MS = 5 * 60 * 1000
+local fav_ids_cache = {}
+local fav_ids_order = {}
+
+store.on_reset(function()
+  fav_ids_cache = {}
+  fav_ids_order = {}
+end)
+
+local function fav_ids_get(media_id)
+  local entry = fav_ids_cache[media_id]
+  if entry == nil then return nil end
+  if host.now() - entry.at >= FAV_IDS_TTL_MS then
+    fav_ids_cache[media_id] = nil
+    return nil
+  end
+  return entry.ids
+end
+
+local function fav_ids_put(media_id, ids)
+  if fav_ids_cache[media_id] == nil then
+    fav_ids_order[#fav_ids_order + 1] = media_id
+    while #fav_ids_order > 30 do
+      local oldest = table.remove(fav_ids_order, 1)
+      fav_ids_cache[oldest] = nil
+    end
+  end
+  fav_ids_cache[media_id] = { ids = ids, at = host.now() }
+end
+
+local function get_fav_ids(media_id)
+  local cached = fav_ids_get(media_id)
+  if cached ~= nil then return cached end
+  local body = http.get("/x/v3/fav/resource/ids", { media_id = media_id })
+  local rows = util.list(data_of(body))
+  fav_ids_put(media_id, rows)
+  return rows
+end
+
+local function fav_page(media_id, limit, offset)
+  local want = util.number(limit, 50)
+  if want < 1 then want = 50 end
+  local skip = util.number(offset, 0)
+  if skip < 0 then skip = 0 end
+
+  local all_items = get_fav_ids(media_id)
+  local page = pager.slice(all_items, want, skip)
+  if #page == 0 then return {} end
+
+  local res_parts = {}
+  for i = 1, #page do
+    local it = page[i]
+    if it.id then
+      local t = it.type or 2
+      res_parts[#res_parts + 1] = tostring(it.id) .. ":" .. tostring(t)
+    end
+  end
+  if #res_parts == 0 then return {} end
+
+  local res_str = table.concat(res_parts, ",")
+  local body = http.get("/x/v3/fav/resource/infos", { resources = res_str })
+  local info_rows = util.list(data_of(body))
+  return song_rows(info_rows)
+end
+
 function M.playlist_songs(id, limit, offset)
   local media = util.text(id)
   if is_chart(media) then
@@ -563,14 +642,7 @@ function M.playlist_songs(id, limit, offset)
     if rid == "" then errors.throw("param") end
     return pager.slice(chart_rows(rid), limit, offset)
   end
-  return folder_page("fav:" .. media, function(pn)
-    local body = http.get("/x/v3/fav/resource/list", {
-      media_id = media, pn = pn, ps = 40, order = "mtime", type = 0,
-    })
-    local data = data_of(body)
-    local info = type(data.info) == "table" and data.info or {}
-    return util.list(data.medias), util.opt_number(info.media_count)
-  end, limit, offset, 40, pager.PLAINTEXT_BUDGET)
+  return fav_page(media, limit, offset)
 end
 
 function M.favorites(limit, offset)
@@ -586,14 +658,7 @@ function M.favorites(limit, offset)
     end
   end
   if default_id == nil or default_id == "" then return {} end
-  return folder_page("fav:" .. default_id, function(pn)
-    local page_body = http.get("/x/v3/fav/resource/list", {
-      media_id = default_id, pn = pn, ps = 40, order = "mtime", type = 0,
-    })
-    local data = data_of(page_body)
-    local info = type(data.info) == "table" and data.info or {}
-    return util.list(data.medias), util.opt_number(info.media_count)
-  end, limit, offset, 40, pager.PLAINTEXT_BUDGET)
+  return fav_page(default_id, limit, offset)
 end
 
 -- `id` is a song identity and MUST go through ids.parse. T7/D1: this op used a

@@ -62,11 +62,15 @@ function M.song(item, overrides)
   if mid == nil then
     local owner = item.owner
     if type(owner) == "table" then mid = owner.mid end
+    local upper = item.upper
+    if type(upper) == "table" then mid = upper.mid end
   end
   local author = util.field(item, "author")
   if author == nil then
     local owner = item.owner
     if type(owner) == "table" then author = owner.name end
+    local upper = item.upper
+    if type(upper) == "table" then author = upper.name end
   end
   local cover = util.image(util.field(item, "pic", "cover"))
   if cover == nil then cover = util.image(overrides.cover) end

@@ -20,6 +20,18 @@
 
 ---
 
+## 📸 界面预览 (Preview)
+
+### 📑 1. 收藏夹全量加载与封面浏览 (Playlists & Dynamic Covers)
+突破 B 站大数据量 412 接口风控与硬编码上限，支持无感全量解析千首大型收藏夹；左侧侧边栏收藏夹封面与列表曲目封面无缝流式渲染。
+![收藏夹与多封面浏览](docs/images/preview/playlist-deep-scroll.jpg)
+
+### 🎙️ 2. 沉浸播放与原生字幕同步歌词 (Now Playing & Synchronized Lyrics)
+以 B 站视频官方同源字幕为主源，毫秒级逐行滚动、时间轴零误差；完美契合 Lazer 沉浸式流光背景与桌面端交互。
+![沉浸播放与字幕歌词](docs/images/preview/player-lyrics.jpg)
+
+---
+
 ## 📦 安装
 
 ### 方式一：Release ZIP
